@@ -1,0 +1,5 @@
+{
+  "name": "Neural Sprite Pipeline",
+  "description": "Automated Decomposition and Reconstruction pipeline for 2D game assets using Multimodal AI.",
+  "requestFramePermissions": []
+}
