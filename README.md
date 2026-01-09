@@ -7,8 +7,9 @@ Using the power of modern Multimodal AI, it decomposes objects into logical movi
 ## 🎬 Demo Videos
 
 ### Robot Arm
-div align="center">
+<div align="center">
   <video src="https://github.com/user-attachments/assets/224016b1-b177-4772-af4d-7293befe191c" width="70%" poster=""> </video>
+  <video src="https://github.com/user-attachments/assets/9ad52e9c-e117-4fc1-a700-382baf4831bf" width="70%" poster=""> </video>
 </div>
 
 ### Toy Character
