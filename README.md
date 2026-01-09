@@ -7,10 +7,10 @@ Using the power of modern Multimodal AI, it decomposes objects into logical movi
 ## 🎬 Demo Videos
 
 ### Robot Arm
-https://github.com/user-attachments/assets/robot_arm.mp4
+[https://github.com/lucaspedrajas/N-Sprite/blob/main/demo-videos/robot_arm.mp4]
 
 ### Toy Character
-https://github.com/user-attachments/assets/toy.mp4
+[https://github.com/lucaspedrajas/N-Sprite/blob/main/demo-videos/excavator_toy.mp4]
 
 
 
