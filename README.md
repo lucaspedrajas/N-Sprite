@@ -7,10 +7,12 @@ Using the power of modern Multimodal AI, it decomposes objects into logical movi
 ## 🎬 Demo Videos
 
 
-<div align="center" style="display: flex; justify-content: center; gap: 10px;">
-  <video src="https://github.com/user-attachments/assets/224016b1-b177-4772-af4d-7293befe191c" width="45%" poster=""></video>
-  <video src="https://github.com/user-attachments/assets/9ad52e9c-e117-4fc1-a700-382baf4831bf" width="45%" poster=""></video>
-</div>
+<table>
+  <tr>
+    <td><video src="https://github.com/user-attachments/assets/224016b1-b177-4772-af4d-7293befe191c" width="100%"></video></td>
+    <td><video src="https://github.com/user-attachments/assets/9ad52e9c-e117-4fc1-a700-382baf4831bf" width="100%"></video></td>
+  </tr>
+</table>
 
 ## 🚀 Features
 
