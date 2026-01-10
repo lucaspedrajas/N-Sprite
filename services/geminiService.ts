@@ -22,8 +22,8 @@ export const analyzeImageParts = async (
     Analyze this game asset image of 1024x1024 resolution. Decompose it into logical moving parts.
     For each part, provide:
     1. ID and descriptive name.
-    2. Mask polygon: array of {x, y} points (4-6 vertices) tracing the part outline in pixel coordinates.
-       The polygon should tightly fit the part's shape like a simple mask.
+    2. Mask polygon: array of {x, y} points tracing the part outline in pixel coordinates.
+       The polygon should tightly fit the part's shape like a segmentation mask.
     3. Parent ID (hierarchical structure).
     4. Pivot point in world pixel coordinates (x, y) - the rotation/transform center for this part.
     5. movementType: ROTATION, TRANSLATION_HORIZONTAL, TRANSLATION_VERTICAL, STATIC, SCALE_PULSE.

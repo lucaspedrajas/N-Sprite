@@ -154,8 +154,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 md:p-8 font-sans text-slate-200">
-      <div className="max-w-4xl mx-auto space-y-8">
+    <div className="min-h-screen bg-slate-950 p-4 md:p-6 lg:p-8 font-sans text-slate-200">
+      <div className="max-w-7xl mx-auto space-y-6">
         
         {/* Navigation / Header */}
         <header className="flex flex-col md:flex-row items-center justify-between gap-4 mb-8 pb-6 border-b border-slate-800">
@@ -195,9 +195,16 @@ export default function App() {
         </header>
 
         {viewMode === 'whitepaper' ? (
-          <Whitepaper />
+          <Whitepaper pipelineState={{
+            originalImage: state.originalImage,
+            annotatedOriginalImage: state.annotatedOriginalImage,
+            preparedAtlasImage: state.preparedAtlasImage,
+            generatedAtlasImage: state.generatedAtlasImage,
+            analysisResults: state.analysisResults,
+            isValidated: state.activeStep >= 4
+          }} />
         ) : (
-          <div className="max-w-xl mx-auto space-y-8">
+          <div className="w-full space-y-6">
             {state.error && (
                 <div className="bg-red-500/10 border border-red-500/50 text-red-200 p-4 rounded-lg mb-6 flex items-center gap-2">
                     <span className="text-red-400 font-bold">Error:</span> {state.error}
@@ -216,7 +223,7 @@ export default function App() {
                     </div>
                     {state.originalImage ? (
                         <div className="rounded-lg overflow-hidden border border-slate-600 bg-slate-900 relative group">
-                            <img src={`data:image/png;base64,${state.originalImage}`} className="w-full h-48 object-contain bg-slate-900/50" />
+                            <img src={`data:image/png;base64,${state.originalImage}`} className="w-full h-64 lg:h-80 object-contain bg-slate-900/50" />
                             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button onClick={() => {
                                     setState(initialState);
@@ -227,7 +234,7 @@ export default function App() {
                             </div>
                         </div>
                     ) : (
-                        <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-slate-600 hover:border-blue-500 rounded-lg p-8 text-center cursor-pointer transition-all group">
+                        <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-slate-600 hover:border-blue-500 rounded-lg p-12 text-center cursor-pointer transition-all group">
                             <ImageIcon className="w-8 h-8 text-slate-500 group-hover:text-blue-400 mx-auto mb-2" />
                             <p className="text-slate-300 font-medium">Click to upload raw asset</p>
                             <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileSelect}/>

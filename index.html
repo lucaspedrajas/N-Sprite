@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Neural Sprite Pipeline</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @media print {
+        body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .print\\:hidden { display: none !important; }
+        .print\\:shadow-none { box-shadow: none !important; }
+        .print\\:p-4 { padding: 1rem !important; }
+        #root > div > div > header { display: none !important; }
+      }
+    </style>
   <script type="importmap">
 {
   "imports": {
