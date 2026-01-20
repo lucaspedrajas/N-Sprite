@@ -2,10 +2,9 @@
 
 **Neural Sprite Pipeline** is an experimental research tool designed for game developers and artists to transform static concept art into production-ready, modular game assets.
 
-Using the power of modern Multimodal AI, it decomposes objects into logical moving parts using polygon masks, generates high-fidelity textures for those parts (including occluded areas), and provides an instant rig preview.
+Using a **Sequential Multi-Persona Workflow**, it combines the reasoning power of **Gemini 3 Flash** with the precision of **SAM3** to decompose objects into logical moving parts, generate high-fidelity textures (reconstructing occluded areas), and provide an instant rig preview.
 
 ## 🎬 Demo Videos
-
 
 <table>
   <tr>
@@ -14,44 +13,55 @@ Using the power of modern Multimodal AI, it decomposes objects into logical movi
   </tr>
 </table>
 
-## 🚀 Features
+## 🚀 Key Features v3.0
 
-- **Image Normalization**: Input images are automatically fitted to a 1024×1024 white canvas for consistent coordinate space.
-- **Polygon Mask Decomposition**: Uses Vision-Language Models to identify logical sub-components with tight-fitting polygon masks (4-6 vertices) instead of bounding boxes.
-- **World-Space Pivots**: Pivot points are specified in absolute pixel coordinates for precise rotation/transform centers.
-- **Occlusion-Aware Reconstruction**: Powered by Generative Image Models, the tool generates individual sprite art for each part, "hallucinating" areas that were hidden in the original image.
-- **Smart Atlas Packing**: Multiple algorithms (row, grid, maxrects) arrange parts into a square sprite sheet at 1K or 2K resolution, displaying scaled polygon outlines.
-- **Real-time Rig Preview**: Instant animation testing using Canvas-based matrix transformations.
-- **Configurable Animations**: Supports Rotation, Horizontal/Vertical Translation, and Pulse Scaling based on AI analysis.
+- **Hybrid Segmentation**: Dynamically chooses between **Gemini** (for simple geometry) and **SAM3** (for organic shapes) based on part complexity.
+- **Sequential Multi-Persona Workflow**:
+    - **Director**: Analyzes structure and assigns strategies.
+    - **Workers**: Extract geometry with self-reflection loops.
+    - **Architect**: Builds the kinematic hierarchy and rig.
+- **Occlusion-Aware Reconstruction**: Generates full textures for hidden areas using **Gemini 1.5 Pro** or **Fal.ai Flux**, enabling seamless rotation.
+- **Smart Atlas Packing**: Optimized layouts (MaxRects, Grid) for efficient texture usage.
+- **Web-Based Editor**: Complete interactive UI for visualizing every stage of the pipeline.
 
 ## 🛠️ Tech Stack
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS.
-- **Build Tool**: Vite.
-- **AI Models**: Currently implemented using Google Gemini, but architected to be model-agnostic.
-  - Structural Inference: `gemini-3-flash-preview`
-  - Image Synthesis: `gemini-3-pro-image-preview` or Fal.ai Flux
-- **Icons**: Lucide React.
+- **Orchestration**: Custom Multi-Step Pipeline.
+- **AI Services**:
+  - **Reasoning**: `gemini-3-flash-preview` (Google)
+  - **Segmentation**: `sam3` (Fal.ai)
+  - **In-Painting**: `gemini-1.5-pro` or `flux-dev` (Fal.ai)
 
 ## 📋 How It Works
 
-1.  **Upload**: Provide a side-view or clear perspective image of a game object (e.g., a car, robot, or character).
-2.  **Normalize**: The image is automatically fitted to a 1024×1024 white canvas, preserving aspect ratio.
-3.  **Analyze**: The AI identifies individual parts with polygon masks and determines pivot points and movement types.
-4.  **Layout**: The system creates an Atlas Layout with scaled polygon outlines marking where each part will be drawn.
-5.  **Reconstruct**: The AI takes the original image and the polygon-based layout template to generate a clean, modular sprite sheet.
-6.  **Preview**: The app rigs the generated sprites and displays an interactive animation to verify the asset's "feel."
+1.  **Upload**: Provide a side-view or clear perspective image of a game object.
+2.  **Director Step**: The AI analyzes the image, breaking it down into named parts and deciding *how* to extract them (Simple vs. Complex).
+3.  **Worker Step**: Specialized modules extract precise geometries.
+    - *Simple parts* use a Generate-Evaluate-Refine loop.
+    - *Complex parts* use SAM3 for pixel-perfect masks.
+4.  **Architect Step**: The system identifies parent-child relationships and pivot points.
+5.  **Atlas & Gen**: Parts are packed into a sprite sheet, and textures are generated to fill the shapes.
+6.  **Preview**: Instant kinematic validation using the generated rig.
 
-## ⚙️ Development
+## ⚙️ Usage
 
-This project uses the `@google/genai` SDK for the reference implementation. Ensure your environment has a valid `API_KEY` configured.
+### Prerequisites
+- Node.js & npm/yarn
+- **Google GenAI API Key**
+- **Fal.ai API Key**
 
+### Setup
+1. Clone the repo.
+2. Rename `.env_example` to `.env` and fill in your API keys.
 
-## IMPORTANT: rename .env_example file to just .env and fill in the api key values to use the app
+```bash
+GOOGLE_API_KEY=your_key_here
+FAL_KEY=your_key_here
+```
 
-then run:
+3. Run the development server:
 
-### Commands
 ```bash
 npm install
 npm run dev
@@ -59,7 +69,7 @@ npm run dev
 
 ## 📖 Documentation
 
-See [WHITEPAPER.md](./WHITEPAPER.md) for a detailed technical overview of the architecture and methodology.
+See [WHITEPAPER.md](./WHITEPAPER.md) for a detailed technical overview of the "Sequential Multi-Persona" architecture and methodology.
 
 ## 📄 License
 

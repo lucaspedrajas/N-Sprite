@@ -1,101 +1,129 @@
 # Neural Sprite Pipeline
-
-## Automated Decomposition & Reconstruction for 2D Rigged Game Assets
-
-*Technical Report v2.0 • Polygon Mask Architecture*
-
----
+**Automated Decomposition & Reconstruction for 2D Rigged Game Assets**
+*Technical Report v3.0 • Hybrid Segmentation Architecture*
 
 ## Abstract
 
-This paper introduces the **Neural Sprite Pipeline**, an automated workflow for converting static 2D concept art into rigged, articulated game assets. By leveraging Multimodal Large Language Models (MLLMs) for structural inference and Generative Image Models for in-painting, we demonstrate a method to deconstruct single-view images into logically segmented parts using polygon masks, reconstruct occluded areas, and generate automated kinematic rigs. Input images are normalized to 1024×1024 resolution for consistent coordinate space. The current implementation utilizes Google's Gemini family of models, but the architecture is designed to be model-agnostic.
+This paper introduces the **Neural Sprite Pipeline (N-Sprite)**, an automated workflow for converting static 2D concept art into rigged, articulated game assets. By leveraging a **Sequential Multi-Persona Workflow**, the system dynamically selects the optimal segmentation strategy—combining the reasoning capabilities of Multimodal Large Language Models (MLLMs) with the precision of specialized segmentation models like SAM3.
+
+The pipeline deconstructs single-view images into logically segmented "Rigid Bodies," reconstructs occluded areas using generative in-painting, and builds automated kinematic rigs. The v3.0 implementation integrates Google's Gemini 3 Flash model for semantic reasoning and Fal.ai's SAM3 for high-fidelity mask generation, orchestrated by a central Director module.
 
 ---
 
 ## I. Methodology
 
 ### A. Image Normalization
+Input images are pre-processed to ensure a consistent coordinate space:
+- **Resizing**: Images are scaled to fit a 1024×1024 pixel canvas.
+- **Padding**: White background padding is applied to maintain aspect ratio.
+- **Centering**: The subject is centered to maximize resolution for small details.
 
-Input images are first normalized to a 1024×1024 pixel canvas with a white background. The original image is scaled to fit while preserving aspect ratio, then centered. This ensures consistent coordinate space for all subsequent operations.
+### B. Stage 1: The Director (Semantic Decomposition)
+The **Director** performing the initial high-level analysis. It does not generate pixel-perfect masks but instead acts as a strategist.
+- **Input**: Normalized Image.
+- **Task**: Identify functional sub-components (e.g., "Left Upper Arm," "Wheel Hub").
+- **Output**: A `PartManifest` containing:
+    - `id`, `name`, `type_hint` (e.g., LIMB, WHEEL).
+    - `visual_anchor` (center point).
+    - `approximate_bbox`.
+    - **`segmentation_strategy`**: Critical decision logic.
+        - **`gemini`**: Selected for simple geometric shapes (circles, rectangles, boxy joints).
+        - **`sam3`**: Selected for complex, organic, or irregular shapes (hair, cloth, muscles).
 
-### B. Semantic Decomposition (Structural Inference)
+### C. Stage 2: Hybrid Worker Layer
+The system executes a parallelized extraction phase based on the Director's assignments:
 
-The normalized image is analyzed by a Vision-Language Model to identify functional sub-components (e.g., wheels, chassis, limbs). The model outputs a structured JSON schema defining:
+#### 1. Gemini Workers (Geometric & Simple)
+For simple parts, a specialized Gemini Worker is spawned.
+- **Self-Reflection Loop**:
+    1.  **Generate**: Propose an SVG primitive (Circle, Rect, Ellipse, Path).
+    2.  **Composite**: Overlay the proposed shape on the original image.
+    3.  **Evaluate**: A separate "QA Persona" reviews the composite.
+        - If `VERDICT: GOOD` → Commit.
+        - If `VERDICT: IMPROVE` → Loop back with specific feedback (e.g., "Widen the radius by 10%").
 
-- **Hierarchical relationships** (Parent/Child nodes)
-- **Polygon masks** (4-6 vertex outlines in pixel coordinates)
-- **Inferred movement types** (Rotation, Translation, Pulse)
-- **Pivot points** in world pixel coordinates
+#### 2. SAM3 Workers (Organic & Complex)
+For complex parts, the system calls the Segment Anything Model 3 (SAM3) via high-speed API (Fal.ai).
+- **Process**:
+    - The Director's bounding box is passed as a prompt to SAM3.
+    - SAM3 returns a high-fidelity pixel mask.
+    - **Vectorization**: The mask is converted to an SVG path using standard tracing algorithms.
 
-### C. Atlas Layout Optimization
+### D. Stage 3: The Architect (Kinematics)
+Once all geometries are extracted, the **Architect** constructs the scene graph.
+- **Input**: List of defined parts with finalized geometries.
+- **Task**:
+    1.  **Hierarchy**: Build a parent-child tree (e.g., Hand → Lower Arm → Upper Arm → Torso).
+    2.  **Pivots**: Identify mechanical pivot points for rotation.
+    3.  **Physics**: Assign movement types (ROTATION, SLIDING, FIXED, ELASTIC).
 
-A deterministic packing algorithm (row, grid, or maxrects) calculates the optimal layout for a square texture atlas (1K/2K). The polygon masks are scaled and transformed to their target positions, creating a visual "blueprint" that preserves each part's shape for the generative phase.
+### E. Stage 4: Atlas Layout Optimization
+A deterministic packing algorithm organizes the extracted parts into a texture atlas (Sprite Sheet).
+- **Algorithms**: `MaxRects` (default), `Row`, or `Grid` packing.
+- **Output**: A transform map linking original image coordinates to atlas coordinates.
 
-### D. Generative Reconstruction (Image Synthesis)
-
-A dual-input prompt strategy is employed. We feed the generative model:
-
-1. The original reference image with annotated polygon masks.
-2. The atlas layout template with scaled polygon outlines.
-
-The model is instructed to extract and generate pixel data for each part within its polygon boundary. Crucially, it must reconstruct areas that were occluded in the original image (e.g., the top of a tire hidden by a fender) to ensure clean rotation during animation.
+### F. Stage 5: Generative Reconstruction
+The final phase fills in the texture data for each part.
+- **Problem**: When a part is extracted, the area "behind" it (in the original image) is unknown. When the sprite rotates, these occluded areas become visible.
+- **Solution**: A dual-input generative process.
+    - **Prompt**: "Reconstruct the [Part Name] in the [Target Box], filling in occluded areas."
+    - **Models**:
+        - **Gemini 1.5 Pro**: Follows complex spatial instructions well.
+        - **Flux (via Fal.ai)**: High-fidelity texture generation, useful for artistic consistency.
 
 ---
 
-## II. Architecture
+## II. System Architecture
 
+```mermaid
+graph TD
+    User["User Upload"] --> Normalize["Image Normalization 1K"]
+    Normalize --> Director["Stage 1: Director (Gemini)"]
+    
+    Director --> Decision{"Segmentation Strategy"}
+    
+    Decision -- Simple/Geo --> WorkerGemini["Gemini Worker"]
+    Decision -- Organic/Complex --> WorkerSAM["SAM3 Worker"]
+    
+    WorkerGemini --> Loop{"QA Loop"}
+    Loop -- Improve --> WorkerGemini
+    
+    Loop -- Good --> Merger["Geometry Merger"]
+    WorkerSAM --> Merger
+    
+    Merger --> Architect["Stage 3: Architect (Hierarchy & Pivots)"]
+    
+    Architect --> Atlas["Stage 4: Atlas Packing"]
+    
+    Atlas --> Gen["Stage 5: Generative Reconstruction"]
+    Gen --> Output["Final Sprite Sheet + Rig JSON"]
 ```
-[Input Image]
-    ⬇
-[Normalize] - (Fit to 1024×1024 white canvas)
-    ⬇
-[Vision Model] - (JSON: Polygon Masks, Pivots & Hierarchy)
-    ⬇
-[Canvas Engine] - (Atlas Template with Scaled Polygons)
-    ⬇
-[Image Gen Model] - (Prompt: "Ref[polygon] → Target[polygon]")
-    ⬇
-[Output Sprite Sheet] + [Animation Rig]
-```
 
----
+## III. Data Structures
 
-## III. Data Schema
-
-### GamePart Interface
+The pipeline relies on a unified `GamePart` schema:
 
 ```typescript
-interface Point {
-  x: number;
-  y: number;
-}
-
-interface PartMask {
-  polygon: Point[];  // 4-6 vertices defining the mask
-}
-
 interface GamePart {
   id: string;
   name: string;
-  parentId: string | null;
-  mask: PartMask;
-  pivot: Point;  // World pixel coordinates
-  movementType: 'ROTATION' | 'TRANSLATION_HORIZONTAL' | 'TRANSLATION_VERTICAL' | 'STATIC' | 'SCALE_PULSE';
-  atlasRect?: Rect;
+  parentId: string | null;     // Heirarchy
+  shape: SVGPrimitive;         // Vector path/primitive
+  bbox: number[];              // [min_x, min_y, max_x, max_y]
+  pivot: { x: number; y: number }; // Rotation point
+  movementType: MovementType;  // Physics behavior
+  origin: {                    // Original coordinates
+    x: number; y: number; width: number; height: number;
+    rotation?: number;
+  };
+  atlasRect?: {                // Atlas coordinates
+    x: number; y: number; w: number; h: number;
+  };
 }
 ```
 
----
-
 ## IV. Future Work
 
-Current limitations include complex skeletal chain inference and multi-view consistency. Future iterations will explore:
-
-- Larger reasoning models for improved polygon accuracy
-- Depth-map estimation for automated Z-indexing (layer ordering)
-- Support for higher-vertex polygon masks to capture more complex part geometries
-- Multi-view input for 3D-aware decomposition
-
----
-
-*Neural Sprite Pipeline Research Prototype • React + GenAI SDK*
+1.  **Multi-View Consistency**: Generating side and back views from the single frontal input.
+2.  **3D Projection**: Mapping the 2D sprites onto low-poly 3D meshes for "2.5D" effects.
+3.  **Automated Animation**: Using the rigging data to auto-generate walk cycles and idle animations.
