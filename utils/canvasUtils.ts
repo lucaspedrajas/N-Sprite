@@ -1,8 +1,16 @@
-import { GamePart, Rect, AtlasResolution, bboxToRect } from "../types";
+import { GamePart, Rect, AtlasResolution, bboxToRect, SVGPrimitive, relToPixel } from "../types";
 
 export type PackingAlgorithm = 'row' | 'grid' | 'maxrects';
 
 const BOX_PADDING = 16;
+
+// Clamp relative value to 0-1 range to prevent shapes exceeding canvas
+const clampRel = (v: number): number => Math.max(0, Math.min(1, v));
+
+// Clamp bbox values
+const clampBbox = (bbox: [number, number, number, number]): [number, number, number, number] => {
+  return [clampRel(bbox[0]), clampRel(bbox[1]), clampRel(bbox[2]), clampRel(bbox[3])];
+};
 
 export const loadImage = (src: string): Promise<HTMLImageElement> => {
   return new Promise((resolve, reject) => {
@@ -50,36 +58,23 @@ interface PartWithSize {
   srcH: number;
 }
 
-const calculatePartSizes = (parts: GamePart[], _imgW: number, _imgH: number): PartWithSize[] => {
+const calculatePartSizes = (parts: GamePart[], imgW: number, _imgH: number): PartWithSize[] => {
+  // bbox is in relative coords (0-1), convert to pixels using image width (assuming square)
+  const size = imgW;
   return parts.map((part, index) => {
-    const bounds = bboxToRect(part.bbox);
+    // Clamp bbox values to prevent invalid dimensions
+    const clampedBbox = clampBbox(part.bbox);
+    const bounds = bboxToRect(clampedBbox, size);
     return {
-      part: { ...part },
+      part: { ...part, bbox: clampedBbox },
       index,
-      srcW: bounds.w,
-      srcH: bounds.h,
+      srcW: Math.max(10, bounds.w), // Ensure minimum size
+      srcH: Math.max(10, bounds.h),
     };
   });
 };
 
-// Draw SVG path on canvas
-const drawSvgPath = (
-  ctx: CanvasRenderingContext2D,
-  pathData: string,
-  offsetX: number = 0,
-  offsetY: number = 0,
-  scaleX: number = 1,
-  scaleY: number = 1
-): void => {
-  const path = new Path2D(pathData);
-  ctx.save();
-  ctx.translate(offsetX, offsetY);
-  ctx.scale(scaleX, scaleY);
-  ctx.stroke(path);
-  ctx.restore();
-};
-
-// Draw a simple rect as fallback
+// Draw a simple rect
 const drawRect = (
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -88,6 +83,60 @@ const drawRect = (
   h: number
 ): void => {
   ctx.strokeRect(x, y, w, h);
+};
+
+// Draw SVG primitive on canvas (converts relative coords to pixels with clamping)
+const drawPrimitive = (
+  ctx: CanvasRenderingContext2D,
+  shape: SVGPrimitive,
+  size: number
+): void => {
+  ctx.beginPath();
+  switch (shape.type) {
+    case 'circle': {
+      const cx = clampRel(shape.cx) * size;
+      const cy = clampRel(shape.cy) * size;
+      const r = clampRel(shape.r) * size;
+      ctx.arc(cx, cy, Math.max(1, r), 0, Math.PI * 2);
+      break;
+    }
+    case 'ellipse': {
+      const cx = clampRel(shape.cx) * size;
+      const cy = clampRel(shape.cy) * size;
+      const rx = Math.max(1, clampRel(shape.rx) * size);
+      const ry = Math.max(1, clampRel(shape.ry) * size);
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      break;
+    }
+    case 'rect': {
+      const x = clampRel(shape.x) * size;
+      const y = clampRel(shape.y) * size;
+      const w = Math.max(1, clampRel(shape.width) * size);
+      const h = Math.max(1, clampRel(shape.height) * size);
+      if (shape.rx) {
+        const rx = clampRel(shape.rx) * size;
+        ctx.roundRect(x, y, w, h, rx);
+      } else {
+        ctx.rect(x, y, w, h);
+      }
+      break;
+    }
+    case 'path': {
+      // For path, scale the context - path d values should be 0-1
+      ctx.save();
+      ctx.scale(size, size);
+      ctx.lineWidth = ctx.lineWidth / size;
+      try {
+        const path = new Path2D(shape.d);
+        ctx.stroke(path);
+      } catch {
+        // Fallback if path parsing fails - draw bbox instead
+      }
+      ctx.restore();
+      return; // Already stroked
+    }
+  }
+  ctx.stroke();
 };
 
 const packRow = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
@@ -256,35 +305,48 @@ const drawAnnotatedOriginal = (
   parts: GamePart[]
 ): void => {
   ctx.drawImage(img, 0, 0);
+  const size = img.width; // Assuming square image
+
+  // Color palette for different parts
+  const colors = [
+    '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', 
+    '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#06b6d4'
+  ];
 
   parts.forEach((part, index) => {
     const num = index + 1;
-    const bounds = bboxToRect(part.bbox);
+    const color = colors[index % colors.length];
+    
+    // Clamp and convert relative bbox to pixels
+    const clampedBbox = clampBbox(part.bbox);
+    const bounds = bboxToRect(clampedBbox, size);
     const cx = bounds.x + bounds.w / 2;
     const cy = bounds.y + bounds.h / 2;
 
-    ctx.strokeStyle = "#ff0000ff";
+    // Draw bounding box
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.setLineDash([8, 4]);
-    
-    // Try to draw SVG path, fall back to bbox rect
-    try {
-      const path = new Path2D(part.mask_path);
-      ctx.stroke(path);
-    } catch {
-      drawRect(ctx, bounds.x, bounds.y, bounds.w, bounds.h);
-    }
+    ctx.setLineDash([6, 3]);
+    ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
     ctx.setLineDash([]);
+    
+    // Draw the SVG primitive shape
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    drawPrimitive(ctx, part.shape, size);
 
-    const fontSize = Math.min(bounds.w, bounds.h) * 0.4;
-    ctx.fillStyle = "#00FF00";
+    // Draw number label with background
+    const fontSize = Math.max(12, Math.min(bounds.w, bounds.h) * 0.3);
     ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     
-    ctx.strokeStyle = "#000000";
-    ctx.lineWidth = fontSize * 0.1;
-    ctx.strokeText(`${num}`, cx, cy);
+    // Background for text
+    const textMetrics = ctx.measureText(`${num}`);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(cx - textMetrics.width/2 - 4, cy - fontSize/2 - 2, textMetrics.width + 8, fontSize + 4);
+    
+    ctx.fillStyle = color;
     ctx.fillText(`${num}`, cx, cy);
   });
 

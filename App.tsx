@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, ArrowRight, Layers, Wand2, Image as ImageIcon, Palette, Monitor, BookOpen, FlaskConical } from 'lucide-react';
-import { AppState, AtlasResolution } from './types';
-import { analyzeImageParts, generateAssetArt as generateAssetArtGemini, StreamCallback } from './services/geminiService';
+import { AppState, AtlasResolution, PipelineDebugData } from './types';
+import { analyzeImageParts, generateAssetArt as generateAssetArtGemini, StreamCallback, StageCallback, DebugCallback, retryWorker, retryDirector, retryArchitect, retryWorkerWithFeedback, RetryOptions } from './services/geminiService';
 import { generateAssetArt as generateAssetArtFal } from './services/falService';
 import { createAtlasPreparation, PackingAlgorithm, removeBackgroundColor, fitImageToSquare } from './utils/canvasUtils';
 import { AnalysisViewer } from './components/AnalysisViewer';
@@ -9,6 +9,9 @@ import { AtlasViewer } from './components/AtlasViewer';
 import { GeneratedAtlasViewer } from './components/GeneratedAtlasViewer';
 import { PreviewAsset } from './components/PreviewAsset';
 import { Whitepaper } from './components/Whitepaper';
+import { PipelineDebugViewer } from './components/PipelineDebugViewer';
+import { KinematicValidator } from './components/KinematicValidator';
+import { RigPreview } from './components/RigPreview';
 
 const initialState: AppState = {
   originalImage: null,
@@ -28,6 +31,8 @@ const initialState: AppState = {
 interface StreamState {
   thinkingText: string;
   isStreaming: boolean;
+  currentStage: string;
+  stageMessage: string;
 }
 
 type ViewMode = 'pipeline' | 'whitepaper';
@@ -39,7 +44,9 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('pipeline');
   const [imageModel, setImageModel] = useState<ImageModel>('gemini');
   const [packingAlgorithm, setPackingAlgorithm] = useState<PackingAlgorithm>('grid');
-  const [streamState, setStreamState] = useState<StreamState>({ thinkingText: '', isStreaming: false });
+  const [streamState, setStreamState] = useState<StreamState>({ thinkingText: '', isStreaming: false, currentStage: '', stageMessage: '' });
+  const [debugData, setDebugData] = useState<PipelineDebugData | null>(null);
+  const [showDebug, setShowDebug] = useState<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -64,16 +71,23 @@ export default function App() {
 
   const handleAnalyze = async (base64: string) => {
     setState(s => ({ ...s, isAnalyzing: true, error: null }));
-    setStreamState({ thinkingText: '', isStreaming: true });
+    setStreamState({ thinkingText: '', isStreaming: true, currentStage: '', stageMessage: '' });
+    setDebugData(null); // Reset debug data for new analysis
     try {
       const onStream: StreamCallback = (chunk, done) => {
-        setStreamState({ thinkingText: chunk, isStreaming: !done });
+        setStreamState(s => ({ ...s, thinkingText: chunk, isStreaming: !done }));
       };
-      const parts = await analyzeImageParts(base64, onStream);
+      const onStage: StageCallback = (stage, message) => {
+        setStreamState(s => ({ ...s, currentStage: stage, stageMessage: message }));
+      };
+      const onDebug: DebugCallback = (data) => {
+        setDebugData({ ...data });
+      };
+      const parts = await analyzeImageParts(base64, onStream, onStage, onDebug);
       setState(s => ({ ...s, isAnalyzing: false, analysisResults: parts }));
     } catch (err: any) {
       setState(s => ({ ...s, isAnalyzing: false, error: err.message || "Analysis failed" }));
-      setStreamState(s => ({ ...s, isStreaming: false }));
+      setStreamState(s => ({ ...s, isStreaming: false, currentStage: '', stageMessage: '' }));
     }
   };
 
@@ -248,26 +262,133 @@ export default function App() {
                     {state.isAnalyzing && (
                         <div className="flex flex-col items-center py-6 gap-3">
                             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                            <p className="text-slate-400 text-sm">Inferring structure via Multimodal LLM...</p>
-                            {streamState.thinkingText && (
-                              <div className="w-full mt-4 p-3 bg-slate-900/80 rounded-lg border border-slate-700 max-h-48 overflow-y-auto">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                                  <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">LLM Response</span>
+                            
+                            {/* Multi-stage pipeline indicator */}
+                            <div className="flex items-center gap-4 mb-2">
+                              {['director', 'workers', 'architect'].map((stage, i) => (
+                                <div key={stage} className="flex items-center gap-2">
+                                  <div className={`w-3 h-3 rounded-full transition-colors ${
+                                    streamState.currentStage === stage ? 'bg-blue-500 animate-pulse' :
+                                    streamState.currentStage === 'complete' || 
+                                    (streamState.currentStage === 'workers' && stage === 'director') ||
+                                    (streamState.currentStage === 'architect' && (stage === 'director' || stage === 'workers'))
+                                    ? 'bg-emerald-500' : 'bg-slate-600'
+                                  }`} />
+                                  <span className={`text-xs font-medium capitalize ${
+                                    streamState.currentStage === stage ? 'text-blue-400' : 'text-slate-500'
+                                  }`}>{stage}</span>
+                                  {i < 2 && <span className="text-slate-600 mx-1">→</span>}
                                 </div>
-                                <pre className="text-xs text-slate-300 whitespace-pre-wrap font-mono leading-relaxed overflow-x-auto">
-                                  {streamState.thinkingText}
-                                </pre>
+                              ))}
+                            </div>
+                            
+                            <p className="text-slate-400 text-sm">
+                              {streamState.stageMessage || 'Initializing multi-agent pipeline...'}
+                            </p>
+                            
+                            {/* Debug toggle */}
+                            <button 
+                              onClick={() => setShowDebug(!showDebug)}
+                              className="text-xs text-slate-500 hover:text-slate-300 underline"
+                            >
+                              {showDebug ? 'Hide' : 'Show'} Debug View
+                            </button>
+                            
+                            {showDebug && (
+                              <div className="w-full mt-4">
+                                <PipelineDebugViewer 
+                                  imageBase64={state.originalImage}
+                                  debugData={debugData}
+                                  currentStage={streamState.currentStage}
+                                  onRetryWorker={async (manifestId, options) => {
+                                    if (state.originalImage) {
+                                      if (options.mode === 'conversational') {
+                                        await retryWorkerWithFeedback(state.originalImage, manifestId, options, setDebugData);
+                                      } else {
+                                        await retryWorker(state.originalImage, manifestId, setDebugData);
+                                      }
+                                    }
+                                  }}
+                                  onRetryDirector={async (options) => {
+                                    if (state.originalImage) {
+                                      const newManifests = await retryDirector(state.originalImage, options, undefined, setDebugData);
+                                      // After director retry, need to re-run workers and architect
+                                      console.log('Director retried, got', newManifests.length, 'parts');
+                                    }
+                                  }}
+                                  onRetryArchitect={async (options) => {
+                                    if (state.originalImage) {
+                                      const newParts = await retryArchitect(state.originalImage, options, undefined, setDebugData);
+                                      setState(s => ({ ...s, analysisResults: newParts }));
+                                    }
+                                  }}
+                                />
                               </div>
                             )}
                         </div>
                     )}
                     {!state.isAnalyzing && state.analysisResults && (
-                        <AnalysisViewer 
-                            parts={state.analysisResults} 
-                            onConfirm={() => handlePrepareAtlas(state.resolution)}
-                            onRetry={() => state.originalImage && handleAnalyze(state.originalImage)}
-                        />
+                        <div className="space-y-4">
+                            {/* Rig Preview - Visual animation validation */}
+                            {state.originalImage && (
+                              <RigPreview 
+                                originalImageBase64={state.originalImage}
+                                parts={state.analysisResults}
+                                onConfirm={() => handlePrepareAtlas(state.resolution)}
+                                onRetry={() => state.originalImage && handleAnalyze(state.originalImage)}
+                              />
+                            )}
+                            
+                            {/* Kinematic Validation - Hierarchy check */}
+                            <KinematicValidator parts={state.analysisResults} />
+                            
+                            {/* Parts list */}
+                            <AnalysisViewer 
+                                parts={state.analysisResults} 
+                                onConfirm={() => handlePrepareAtlas(state.resolution)}
+                                onRetry={() => state.originalImage && handleAnalyze(state.originalImage)}
+                            />
+                            
+                            {/* Show debug view after completion */}
+                            {debugData && (
+                              <div className="mt-6 pt-4 border-t border-slate-700">
+                                <button 
+                                  onClick={() => setShowDebug(!showDebug)}
+                                  className="text-sm text-indigo-400 hover:text-indigo-300 mb-4 flex items-center gap-2"
+                                >
+                                  {showDebug ? '▼ Hide' : '▶ Show'} Pipeline Debug Details
+                                </button>
+                                {showDebug && (
+                                  <PipelineDebugViewer 
+                                    imageBase64={state.originalImage}
+                                    debugData={debugData}
+                                    currentStage="complete"
+                                    onRetryWorker={async (manifestId, options) => {
+                                      if (state.originalImage) {
+                                        if (options.mode === 'conversational') {
+                                          await retryWorkerWithFeedback(state.originalImage, manifestId, options, setDebugData);
+                                        } else {
+                                          await retryWorker(state.originalImage, manifestId, setDebugData);
+                                        }
+                                      }
+                                    }}
+                                    onRetryDirector={async (options) => {
+                                      if (state.originalImage) {
+                                        const newManifests = await retryDirector(state.originalImage, options, undefined, setDebugData);
+                                        console.log('Director retried, got', newManifests.length, 'parts');
+                                      }
+                                    }}
+                                    onRetryArchitect={async (options) => {
+                                      if (state.originalImage) {
+                                        const newParts = await retryArchitect(state.originalImage, options, undefined, setDebugData);
+                                        setState(s => ({ ...s, analysisResults: newParts }));
+                                      }
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            )}
+                        </div>
                     )}
                 </>
             ))}

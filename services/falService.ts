@@ -19,8 +19,9 @@ export const generateAssetArt = async (
   const mapping = parts.map((p, index) => {
     const num = index + 1;
     const target = p.atlasRect!;
-    const bboxStr = `[${p.bbox.join(',')}]`;
-    return `- Box #${num} = "${p.name}": (BBox: ${bboxStr}, SVG Path: ${p.mask_path}) -> (Target rect in layout: [${target.x},${target.y},${target.w},${target.h}])`;
+    const bboxStr = `[${p.bbox.map(v => v.toFixed(3)).join(',')}]`;
+    const shapeDesc = p.shape.type === 'path' ? 'path' : p.shape.type;
+    return `- Box #${num} = "${p.name}": (Shape: ${shapeDesc}, BBox: ${bboxStr}) -> (Target rect: [${target.x},${target.y},${target.w},${target.h}])`;
   }).join("\n");
 
   const fullPrompt = `

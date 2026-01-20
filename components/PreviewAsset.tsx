@@ -1,6 +1,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { GamePart, MovementType, bboxToRect } from '../types';
+import { GamePart, MovementType, bboxToRect, relToPixel } from '../types';
 import { loadImage } from '../utils/canvasUtils';
 import { Download, RefreshCw } from 'lucide-react';
 
@@ -50,16 +50,20 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
       childrenOf.get(parentKey)!.push(p);
     });
 
-    // Get canvas position for a part using bbox
+    // Get canvas position for a part using bbox (relative 0-1 coords)
+    const imgSize = 1024; // Base image size
     const getPartPosition = (part: GamePart) => {
-      const bounds = bboxToRect(part.bbox);
+      // Convert relative bbox to pixels, then scale for canvas
+      const bounds = bboxToRect(part.bbox, imgSize);
       const partW = bounds.w * scaleFactor;
       const partH = bounds.h * scaleFactor;
-      const drawX = (bounds.x * scaleFactor) - (500 * scaleFactor) + cx;
-      const drawY = (bounds.y * scaleFactor) - (500 * scaleFactor) + cy;
-      // Pivot is now in world pixel coordinates, transform to canvas space
-      const pivotX = (part.pivot.x * scaleFactor) - (500 * scaleFactor) + cx;
-      const pivotY = (part.pivot.y * scaleFactor) - (500 * scaleFactor) + cy;
+      const drawX = (bounds.x * scaleFactor) - (imgSize/2 * scaleFactor) + cx;
+      const drawY = (bounds.y * scaleFactor) - (imgSize/2 * scaleFactor) + cy;
+      // Pivot is in relative coords (0-1), convert to canvas space
+      const pivotPx = relToPixel(part.pivot.x, imgSize);
+      const pivotPy = relToPixel(part.pivot.y, imgSize);
+      const pivotX = (pivotPx * scaleFactor) - (imgSize/2 * scaleFactor) + cx;
+      const pivotY = (pivotPy * scaleFactor) - (imgSize/2 * scaleFactor) + cy;
       return { drawX, drawY, partW, partH, pivotX, pivotY };
     };
 
@@ -70,8 +74,8 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
         case MovementType.ROTATION:
           rotate = Math.sin(t * 3) * 0.2;
           break;
-        case MovementType.TRANSLATION_AXIS:
-          // Translate along both axes with slight phase difference
+        case MovementType.SLIDING:
+          // Slide along axis with slight oscillation
           tx = Math.sin(t * 5) * 10;
           ty = Math.sin(t * 5 + 0.5) * 5;
           break;
@@ -79,7 +83,7 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
           // Elastic bouncy scaling effect
           scale = 1 + Math.sin(t * 6) * 0.08 * Math.exp(-Math.abs(Math.sin(t * 2)) * 0.5);
           break;
-        case MovementType.STATIC:
+        case MovementType.FIXED:
         default:
           break;
       }
@@ -137,8 +141,8 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
       const children = childrenOf.get(part.id) || [];
       // Sort children by area (largest first for proper layering)
       children.sort((a, b) => {
-        const boundsA = bboxToRect(a.bbox);
-        const boundsB = bboxToRect(b.bbox);
+        const boundsA = bboxToRect(a.bbox, imgSize);
+        const boundsB = bboxToRect(b.bbox, imgSize);
         const areaA = boundsA.w * boundsA.h;
         const areaB = boundsB.w * boundsB.h;
         return areaB - areaA;
@@ -149,8 +153,8 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
     // Get root parts (no parent) and sort by area
     const rootParts = childrenOf.get(null) || [];
     rootParts.sort((a, b) => {
-      const boundsA = bboxToRect(a.bbox);
-      const boundsB = bboxToRect(b.bbox);
+      const boundsA = bboxToRect(a.bbox, imgSize);
+      const boundsB = bboxToRect(b.bbox, imgSize);
       const areaA = boundsA.w * boundsA.h;
       const areaB = boundsB.w * boundsB.h;
       return areaB - areaA;
