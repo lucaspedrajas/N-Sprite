@@ -1,4 +1,4 @@
-import { GamePart, Rect, AtlasResolution } from "../types";
+import { GamePart, Rect, AtlasResolution, bboxToRect } from "../types";
 
 export type PackingAlgorithm = 'row' | 'grid' | 'maxrects';
 
@@ -50,22 +50,9 @@ interface PartWithSize {
   srcH: number;
 }
 
-const getPolygonBounds = (polygon: { x: number; y: number }[]): { x: number; y: number; w: number; h: number } => {
-  if (polygon.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
-  let minX = polygon[0].x, maxX = polygon[0].x;
-  let minY = polygon[0].y, maxY = polygon[0].y;
-  for (const pt of polygon) {
-    minX = Math.min(minX, pt.x);
-    maxX = Math.max(maxX, pt.x);
-    minY = Math.min(minY, pt.y);
-    maxY = Math.max(maxY, pt.y);
-  }
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-};
-
 const calculatePartSizes = (parts: GamePart[], _imgW: number, _imgH: number): PartWithSize[] => {
   return parts.map((part, index) => {
-    const bounds = getPolygonBounds(part.mask.polygon);
+    const bounds = bboxToRect(part.bbox);
     return {
       part: { ...part },
       index,
@@ -75,18 +62,32 @@ const calculatePartSizes = (parts: GamePart[], _imgW: number, _imgH: number): Pa
   });
 };
 
-const drawPolygon = (
+// Draw SVG path on canvas
+const drawSvgPath = (
   ctx: CanvasRenderingContext2D,
-  polygon: { x: number; y: number }[]
+  pathData: string,
+  offsetX: number = 0,
+  offsetY: number = 0,
+  scaleX: number = 1,
+  scaleY: number = 1
 ): void => {
-  if (polygon.length < 3) return;
-  ctx.beginPath();
-  ctx.moveTo(polygon[0].x, polygon[0].y);
-  for (let i = 1; i < polygon.length; i++) {
-    ctx.lineTo(polygon[i].x, polygon[i].y);
-  }
-  ctx.closePath();
-  ctx.stroke();
+  const path = new Path2D(pathData);
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(scaleX, scaleY);
+  ctx.stroke(path);
+  ctx.restore();
+};
+
+// Draw a simple rect as fallback
+const drawRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): void => {
+  ctx.strokeRect(x, y, w, h);
 };
 
 const packRow = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
@@ -227,22 +228,14 @@ const drawAtlas = (
 
   partsWithSize.forEach((p) => {
     const rect = p.part.atlasRect!;
-    const polygon = p.part.mask.polygon;
-    const bounds = getPolygonBounds(polygon);
+    const bounds = bboxToRect(p.part.bbox);
     const num = p.index + 1;
 
-    // Scale polygon to fit atlas rect
-    const scaleX = rect.w / bounds.w;
-    const scaleY = rect.h / bounds.h;
-    const scaledPolygon = polygon.map(pt => ({
-      x: rect.x + (pt.x - bounds.x) * scaleX,
-      y: rect.y + (pt.y - bounds.y) * scaleY,
-    }));
-
+    // Draw dashed bounding box in atlas
     ctx.strokeStyle = "#000000";
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
-    drawPolygon(ctx, scaledPolygon);
+    drawRect(ctx, rect.x, rect.y, rect.w, rect.h);
     ctx.setLineDash([]);
 
     const fontSize = Math.min(rect.w, rect.h) * 0.6;
@@ -263,20 +256,24 @@ const drawAnnotatedOriginal = (
   parts: GamePart[]
 ): void => {
   ctx.drawImage(img, 0, 0);
-  const w = img.width;
-  const h = img.height;
 
   parts.forEach((part, index) => {
     const num = index + 1;
-    const polygon = part.mask.polygon;
-    const bounds = getPolygonBounds(polygon);
+    const bounds = bboxToRect(part.bbox);
     const cx = bounds.x + bounds.w / 2;
     const cy = bounds.y + bounds.h / 2;
 
     ctx.strokeStyle = "#ff0000ff";
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 4]);
-    drawPolygon(ctx, polygon);
+    
+    // Try to draw SVG path, fall back to bbox rect
+    try {
+      const path = new Path2D(part.mask_path);
+      ctx.stroke(path);
+    } catch {
+      drawRect(ctx, bounds.x, bounds.y, bounds.w, bounds.h);
+    }
     ctx.setLineDash([]);
 
     const fontSize = Math.min(bounds.w, bounds.h) * 0.4;

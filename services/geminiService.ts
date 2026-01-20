@@ -1,7 +1,7 @@
 
 // Removed Schema import and type annotation to follow @google/genai guidelines
 import { GoogleGenAI, Type } from "@google/genai";
-import { GamePart, MovementType, Point } from '../types';
+import { GamePart, MovementType, BBox } from '../types';
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -19,17 +19,30 @@ export const analyzeImageParts = async (
   const modelId = "gemini-3-flash-preview";
 
   const prompt = `
-    Analyze this game asset image of 1024x1024 resolution. Decompose it into logical moving parts.
+    Role: You are an expert Technical Artist and 2D Rigger specializing in skeletal animation.
+    Task: Decompose the provided game asset (1024x1024) into a kinematic hierarchy of moving parts for a Cutout Animation rig.
+
+    Process:
+    1.  **Visual Analysis**: Identify distinct mechanical or organic components (e.g., "UpperArm", "Forearm", "Wheel", "Piston").
+    2.  **Kinematic Logic**: Determine how these parts articulate. Which part drives which? (e.g., The Hip drives the Thigh).
+    3.  **Geometry Extraction**: Trace the shape of each part.
+
+    Output format: JSON Array of Objects.
     For each part, provide:
-    1. ID and descriptive name.
-    2. Mask polygon: array of {x, y} points tracing the part outline in pixel coordinates.
-       The polygon should tightly fit the part's shape like a segmentation mask.
-    3. Parent ID (hierarchical structure).
-    4. Pivot point in world pixel coordinates (x, y) - the rotation/transform center for this part.
-    5. movementType: ROTATION, TRANSLATION_HORIZONTAL, TRANSLATION_VERTICAL, STATIC, SCALE_PULSE.
-    Ensure parts represent distinct pieces that would be rigged separately.
-    Polygons should trace the actual shape, not just axis-aligned rectangles.
-  `;
+    1.  id: (string) Unique snake_case ID.
+    2.  name: (string) Descriptive display name.
+    3.  parentId: (string or null) The ID of the bone this part attaches to.
+    4.  pivot: {x, y} - The center of rotation in integer pixel coordinates (0-1024). Crucial for correct articulation.
+    5.  bbox: [min_x, min_y, max_x, max_y] - The precise bounding box of the part.
+    6.  mask_type: "SVG_PATH"
+    7.  mask_path: (string) A simplified SVG path data string (d attribute) outlining the part. Use relative commands if possible. Focus on key vertices (corners, curves) rather than pixel-perfect density.
+    8.  movementType: Enum [ROTATION, TRANSLATION_AXIS, STATIC, ELASTIC].
+
+    Constraint Checklist & Confidence Score:
+    1. Ensure no parts share the exact same bounds unless they overlap significantly.
+    2. Ensure the 'pivot' is logically placed (e.g., a head pivots at the neck, not the nose).
+    3. Confidence Score: 0-1 (How certain are you of the shape complexity?).
+    `;
 
   // Define responseSchema as a plain object using Type from @google/genai
   const responseSchema = {
@@ -40,23 +53,13 @@ export const analyzeImageParts = async (
         id: { type: Type.STRING },
         name: { type: Type.STRING },
         parentId: { type: Type.STRING, nullable: true },
-        mask: {
-          type: Type.OBJECT,
-          properties: {
-            polygon: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  x: { type: Type.NUMBER },
-                  y: { type: Type.NUMBER },
-                },
-                required: ["x", "y"],
-              },
-            },
-          },
-          required: ["polygon"],
+        bbox: {
+          type: Type.ARRAY,
+          items: { type: Type.NUMBER },
+          description: "Bounding box as [min_x, min_y, max_x, max_y]"
         },
+        mask_type: { type: Type.STRING, enum: ["SVG_PATH"] },
+        mask_path: { type: Type.STRING, description: "SVG path d attribute" },
         pivot: {
           type: Type.OBJECT,
           properties: {
@@ -67,10 +70,11 @@ export const analyzeImageParts = async (
         },
         movementType: {
           type: Type.STRING,
-          enum: ["ROTATION", "TRANSLATION_HORIZONTAL", "TRANSLATION_VERTICAL", "STATIC", "SCALE_PULSE"]
+          enum: ["ROTATION", "TRANSLATION_AXIS", "STATIC", "ELASTIC"]
         },
+        confidence: { type: Type.NUMBER, description: "Confidence score 0-1" },
       },
-      required: ["id", "name", "mask", "pivot", "movementType"],
+      required: ["id", "name", "bbox", "mask_type", "mask_path", "pivot", "movementType"],
     },
   };
 
@@ -119,10 +123,9 @@ export const generateAssetArt = async (
   // Create number-to-part mapping (matches numbers drawn on atlas)
   const mapping = parts.map((p, index) => {
     const num = index + 1;
-    const poly = p.mask.polygon;
     const target = p.atlasRect!;
-    const polyStr = poly.map(pt => `(${pt.x},${pt.y})`).join(' ');
-    return `- Box #${num} = "${p.name}": (Mask polygon: ${polyStr}) -> (Target rect in layout: [${target.x},${target.y},${target.w},${target.h}])`;
+    const bboxStr = `[${p.bbox.join(',')}]`;
+    return `- Box #${num} = "${p.name}": (BBox: ${bboxStr}, SVG Path: ${p.mask_path}) -> (Target rect in layout: [${target.x},${target.y},${target.w},${target.h}])`;
   }).join("\n");
 
   const fullPrompt = `

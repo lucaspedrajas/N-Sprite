@@ -1,6 +1,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { GamePart, MovementType } from '../types';
+import { GamePart, MovementType, bboxToRect } from '../types';
 import { loadImage } from '../utils/canvasUtils';
 import { Download, RefreshCw } from 'lucide-react';
 
@@ -50,23 +50,9 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
       childrenOf.get(parentKey)!.push(p);
     });
 
-    // Get canvas position for a part
-    // Get bounding rect from polygon
-    const getPolygonBounds = (polygon: { x: number; y: number }[]) => {
-      if (polygon.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
-      let minX = polygon[0].x, maxX = polygon[0].x;
-      let minY = polygon[0].y, maxY = polygon[0].y;
-      for (const pt of polygon) {
-        minX = Math.min(minX, pt.x);
-        maxX = Math.max(maxX, pt.x);
-        minY = Math.min(minY, pt.y);
-        maxY = Math.max(maxY, pt.y);
-      }
-      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-    };
-
+    // Get canvas position for a part using bbox
     const getPartPosition = (part: GamePart) => {
-      const bounds = getPolygonBounds(part.mask.polygon);
+      const bounds = bboxToRect(part.bbox);
       const partW = bounds.w * scaleFactor;
       const partH = bounds.h * scaleFactor;
       const drawX = (bounds.x * scaleFactor) - (500 * scaleFactor) + cx;
@@ -84,14 +70,17 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
         case MovementType.ROTATION:
           rotate = Math.sin(t * 3) * 0.2;
           break;
-        case MovementType.TRANSLATION_HORIZONTAL:
+        case MovementType.TRANSLATION_AXIS:
+          // Translate along both axes with slight phase difference
           tx = Math.sin(t * 5) * 10;
+          ty = Math.sin(t * 5 + 0.5) * 5;
           break;
-        case MovementType.TRANSLATION_VERTICAL:
-          ty = Math.sin(t * 5) * 10;
+        case MovementType.ELASTIC:
+          // Elastic bouncy scaling effect
+          scale = 1 + Math.sin(t * 6) * 0.08 * Math.exp(-Math.abs(Math.sin(t * 2)) * 0.5);
           break;
-        case MovementType.SCALE_PULSE:
-          scale = 1 + Math.sin(t * 4) * 0.05;
+        case MovementType.STATIC:
+        default:
           break;
       }
       return { rotate, tx, ty, scale };
@@ -148,8 +137,8 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
       const children = childrenOf.get(part.id) || [];
       // Sort children by area (largest first for proper layering)
       children.sort((a, b) => {
-        const boundsA = getPolygonBounds(a.mask.polygon);
-        const boundsB = getPolygonBounds(b.mask.polygon);
+        const boundsA = bboxToRect(a.bbox);
+        const boundsB = bboxToRect(b.bbox);
         const areaA = boundsA.w * boundsA.h;
         const areaB = boundsB.w * boundsB.h;
         return areaB - areaA;
@@ -160,8 +149,8 @@ export const PreviewAsset: React.FC<Props> = ({ atlasBase64, parts }) => {
     // Get root parts (no parent) and sort by area
     const rootParts = childrenOf.get(null) || [];
     rootParts.sort((a, b) => {
-      const boundsA = getPolygonBounds(a.mask.polygon);
-      const boundsB = getPolygonBounds(b.mask.polygon);
+      const boundsA = bboxToRect(a.bbox);
+      const boundsB = bboxToRect(b.bbox);
       const areaA = boundsA.w * boundsA.h;
       const areaB = boundsB.w * boundsB.h;
       return areaB - areaA;

@@ -18,10 +18,9 @@ export const generateAssetArt = async (
   // Create number-to-part mapping (matches numbers drawn on atlas)
   const mapping = parts.map((p, index) => {
     const num = index + 1;
-    const poly = p.mask.polygon;
     const target = p.atlasRect!;
-    const polyStr = poly.map(pt => `(${pt.x},${pt.y})`).join(' ');
-    return `- Box #${num} = "${p.name}": (Mask polygon: ${polyStr}) -> (Target rect in layout: [${target.x},${target.y},${target.w},${target.h}])`;
+    const bboxStr = `[${p.bbox.join(',')}]`;
+    return `- Box #${num} = "${p.name}": (BBox: ${bboxStr}, SVG Path: ${p.mask_path}) -> (Target rect in layout: [${target.x},${target.y},${target.w},${target.h}])`;
   }).join("\n");
 
   const fullPrompt = `

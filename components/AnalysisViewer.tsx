@@ -129,6 +129,7 @@ export const AnalysisViewer: React.FC<Props> = ({ parts, onConfirm, onRetry }) =
                 <span className="font-medium text-indigo-300">{part.name}</span>
                 <span className="text-xs text-slate-400">
                   Parent: {part.parentId || "Root"} | Move: {MOVEMENT_LABELS[part.movementType]}
+                  {part.confidence !== undefined && ` | Conf: ${Math.round(part.confidence * 100)}%`}
                 </span>
               </div>
               <div className="text-xs bg-slate-900 px-2 py-1 rounded text-slate-500 font-mono">

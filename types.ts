@@ -3,10 +3,6 @@ export interface Point {
   y: number;
 }
 
-export interface PartMask {
-  polygon: Point[];  // Array of vertices defining the mask polygon (clockwise)
-}
-
 export interface Rect {
   x: number;
   y: number;
@@ -14,12 +10,14 @@ export interface Rect {
   h: number;
 }
 
+// Bounding box as [min_x, min_y, max_x, max_y]
+export type BBox = [number, number, number, number];
+
 export enum MovementType {
   ROTATION = 'ROTATION',
-  TRANSLATION_HORIZONTAL = 'TRANSLATION_HORIZONTAL',
-  TRANSLATION_VERTICAL = 'TRANSLATION_VERTICAL',
+  TRANSLATION_AXIS = 'TRANSLATION_AXIS',
   STATIC = 'STATIC',
-  SCALE_PULSE = 'SCALE_PULSE'
+  ELASTIC = 'ELASTIC'
 }
 
 export type AtlasResolution = 1024 | 2048;
@@ -28,9 +26,12 @@ export interface GamePart {
   id: string;
   name: string;
   parentId: string | null;
-  mask: PartMask;
+  bbox: BBox;  // [min_x, min_y, max_x, max_y]
+  mask_type: 'SVG_PATH';
+  mask_path: string;  // SVG path d attribute
   pivot: { x: number; y: number };
   movementType: MovementType;
+  confidence?: number;  // 0-1 confidence score
   atlasRect?: Rect; 
 }
 
@@ -51,8 +52,15 @@ export interface AppState {
 
 export const MOVEMENT_LABELS: Record<MovementType, string> = {
   [MovementType.ROTATION]: 'Rotate',
-  [MovementType.TRANSLATION_HORIZONTAL]: 'Move Horizontally',
-  [MovementType.TRANSLATION_VERTICAL]: 'Move Vertically',
+  [MovementType.TRANSLATION_AXIS]: 'Translate',
   [MovementType.STATIC]: 'Static',
-  [MovementType.SCALE_PULSE]: 'Pulse Scale'
+  [MovementType.ELASTIC]: 'Elastic'
 };
+
+// Helper to convert bbox to Rect
+export const bboxToRect = (bbox: BBox): Rect => ({
+  x: bbox[0],
+  y: bbox[1],
+  w: bbox[2] - bbox[0],
+  h: bbox[3] - bbox[1]
+});
