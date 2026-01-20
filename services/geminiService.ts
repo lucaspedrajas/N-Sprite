@@ -1,10 +1,10 @@
 
 // Multi-Agent Architecture for Kinematic Decomposition
 import { GoogleGenAI, Type } from "@google/genai";
-import { 
-  GamePart, 
-  PartManifest, 
-  WorkerGeometry, 
+import {
+  GamePart,
+  PartManifest,
+  WorkerGeometry,
   SVGPrimitive,
   MovementType,
   PartTypeHint,
@@ -69,21 +69,26 @@ const runDirector = async (
   const startTime = Date.now();
 
   const prompt = `
-Role: You are the Director - a project manager for 2D game asset rigging.
-Task: Identify and catalog all distinct parts in this game asset image for cutout animation.
+Role: You are a Senior 2D Rigger specializing in kinematic mechanics.
+Task: Identify the main "Rigid Bodies" (kinematic groups) in this game asset.
 
 IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0) where 0.0 is top/left and 1.0 is bottom/right.
 
-For each part, provide:
-1. id: Unique snake_case identifier (e.g., "left_wheel", "upper_arm")
+Definition of a "Part":
+A part is a group of visual elements that moves as a single rigid unit.
+- If multiple objects move together (e.g., a rider and their saddle, or a wheel and its hubcap), they must be ONE part.
+- Ignore internal seams, bolts, or color changes unless they represent a mechanical joint.
+
+For each Rigid Body, provide:
+1. id: Unique snake_case identifier (e.g., "rear_wheel_assembly", "main_chassis")
 2. name: Human-readable display name
-3. visual_anchor: [x, y] - A point (0-1 relative) that falls INSIDE this specific part. This disambiguates similar parts.
+3. visual_anchor: [x, y] - A point (0-1 relative) that falls INSIDE this specific part.
 4. type_hint: One of [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
 
 Rules:
-- List ALL distinct moving or separable parts
-- Ensure visual_anchor is clearly inside each part, not on edges
-- Be specific with names ("Left Wheel" vs "Right Wheel")
+- Prioritize minimal, functional parts over detailed separation.
+- Ensure visual_anchor is clearly inside the main mass of the part.
+- Group static attachments (stickers, armor plates, handles) into their parent body.
 `;
 
   const responseSchema = {
@@ -131,12 +136,12 @@ Rules:
   onStream?.(fullText, true);
 
   if (!fullText) throw new Error("Director: No response");
-  
+
   addApiLog('director', prompt, fullText, Date.now() - startTime);
   const result = JSON.parse(fullText) as PartManifest[];
   debugData.directorOutput = result;
   onDebug?.({ ...debugData });
-  
+
   return result;
 };
 
@@ -225,7 +230,7 @@ Use path only for irregular shapes.
 
   const text = response.text;
   if (!text) throw new Error(`Worker ${manifest.id}: No response`);
-  
+
   addApiLog('workers', prompt, text, Date.now() - startTime);
   const result = JSON.parse(text);
   // Normalize shape to proper SVGPrimitive type
@@ -236,10 +241,10 @@ Use path only for irregular shapes.
     amodal_completed: result.amodal_completed,
     confidence: result.confidence
   };
-  
+
   debugData.workerOutputs.push(geometry);
   onDebug?.({ ...debugData });
-  
+
   return geometry;
 };
 
@@ -356,7 +361,7 @@ Output the complete GamePart array with all fields.
   onStream?.(fullText, true);
 
   if (!fullText) throw new Error("Architect: No response");
-  
+
   const rigging = JSON.parse(fullText) as Array<{
     id: string;
     name: string;
@@ -371,7 +376,7 @@ Output the complete GamePart array with all fields.
   const parts = rigging.map(rig => {
     const geo = geometries.find(g => g.id === rig.id);
     const manifest = manifests.find(m => m.id === rig.id);
-    
+
     if (!geo || !manifest) {
       throw new Error(`Missing data for part ${rig.id}`);
     }
@@ -388,10 +393,10 @@ Output the complete GamePart array with all fields.
       confidence: geo.confidence
     };
   });
-  
+
   debugData.architectOutput = parts;
   onDebug?.({ ...debugData });
-  
+
   return parts;
 };
 
@@ -399,12 +404,13 @@ Output the complete GamePart array with all fields.
 // Orchestrator - Full Pipeline
 // ============================================
 
-// Run only the Director stage - returns manifests, user must confirm before workers
+// Run only the Director stage - returns full debug data
 export const runDirectorOnly = async (
   imageBase64: string,
   onStream?: StreamCallback,
+  onStage?: StageCallback,
   onDebug?: DebugCallback
-): Promise<PartManifest[]> => {
+): Promise<PipelineDebugData> => {
   // Reset debug data for new run
   debugData = {
     directorOutput: null,
@@ -413,39 +419,68 @@ export const runDirectorOnly = async (
     architectOutput: null,
     apiLogs: []
   };
-  
+
+  onStage?.('director', 'Discovering parts...');
   const manifests = await runDirector(imageBase64, onStream, onDebug);
-  return manifests;
+
+  debugData.directorOutput = manifests;
+  onDebug?.({ ...debugData });
+
+  return { ...debugData };
 };
 
-// Run only the Workers stage - requires manifests from Director
+// Run only the Workers stage - requires manifests
 export const runWorkersOnly = async (
   imageBase64: string,
-  onDebug?: DebugCallback
-): Promise<WorkerGeometry[]> => {
-  const manifests = debugData.directorOutput;
-  if (!manifests || manifests.length === 0) {
-    throw new Error('No director output found. Run Director first.');
+  manifests: PartManifest[],
+  onStream?: StreamCallback,
+  onStage?: StageCallback,
+  onDebug?: DebugCallback,
+  existingDebugData?: PipelineDebugData
+): Promise<PipelineDebugData> => {
+  // Restore context if provided
+  if (existingDebugData) {
+    debugData = { ...existingDebugData, directorOutput: manifests };
+  } else {
+    debugData.directorOutput = manifests;
   }
-  
+
+  if (!debugData.directorOutput || debugData.directorOutput.length === 0) {
+    throw new Error('No director output found.');
+  }
+
   // Clear previous worker data
   debugData.workerOutputs = [];
   debugData.workerErrors = [];
-  
-  const workerResults = await Promise.allSettled(
-    manifests.map(m => runWorker(imageBase64, m, onDebug))
-  );
-  
+  onDebug?.({ ...debugData }); // Notify UI that we are starting from scratch (triggers skeletons)
+
+  const BATCH_SIZE = 8;
+  const workerResults: PromiseSettledResult<WorkerGeometry>[] = [];
+
+  for (let i = 0; i < manifests.length; i += BATCH_SIZE) {
+    const chunk = manifests.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(manifests.length / BATCH_SIZE);
+
+    onStage?.('workers', `Processing batch ${batchNum}/${totalBatches} (${i + 1}-${Math.min(i + chunk.length, manifests.length)} of ${manifests.length})...`);
+
+    const batchResults = await Promise.allSettled(
+      chunk.map(m => runWorker(imageBase64, m, onDebug))
+    );
+
+    workerResults.push(...batchResults);
+  }
+
   const geometries: WorkerGeometry[] = [];
   const errors: WorkerError[] = [];
-  
+
   workerResults.forEach((result, index) => {
     const manifest = manifests[index];
     if (result.status === 'fulfilled') {
       geometries.push(result.value);
     } else {
-      const errorMsg = result.reason instanceof Error 
-        ? result.reason.message 
+      const errorMsg = result.reason instanceof Error
+        ? result.reason.message
         : String(result.reason);
       errors.push({
         manifestId: manifest.id,
@@ -455,101 +490,56 @@ export const runWorkersOnly = async (
       });
     }
   });
-  
+
   debugData.workerErrors = errors;
+  // workerOutputs are already pushed implicitly by runWorker, but let's ensure consistency
+  // runWorker pushes to global debugData.workerOutputs. 
+  // We should rely on that or reset it. 
+  // Ideally runWorker shouldn't touch global state if we are being pure, but for now we sync.
+
   onDebug?.({ ...debugData });
-  
-  return geometries;
+
+  return { ...debugData };
 };
 
 // Run only the Architect stage - requires manifests and geometries
 export const runArchitectOnly = async (
   imageBase64: string,
+  workerOutputs: WorkerGeometry[],
   onStream?: StreamCallback,
-  onDebug?: DebugCallback
-): Promise<GamePart[]> => {
+  onStage?: StageCallback,
+  onDebug?: DebugCallback,
+  existingDebugData?: PipelineDebugData
+): Promise<PipelineDebugData> => {
+  if (existingDebugData) {
+    debugData = { ...existingDebugData, workerOutputs };
+  } else {
+    debugData.workerOutputs = workerOutputs;
+  }
+  // Clear previous architect output to ensure we show loading state
+  debugData.architectOutput = null;
+  onDebug?.({ ...debugData });
+
   const manifests = debugData.directorOutput;
-  const geometries = debugData.workerOutputs;
-  
+  const geometries = workerOutputs;
+
   if (!manifests || manifests.length === 0) {
     throw new Error('No director output found. Run Director first.');
   }
   if (!geometries || geometries.length === 0) {
     throw new Error('No worker outputs found. Run Workers first.');
   }
-  
-  const parts = await runArchitect(imageBase64, manifests, geometries, onStream, onDebug);
-  return parts;
-};
 
-// Full pipeline - runs all 3 stages automatically (legacy behavior)
-export const analyzeImageParts = async (
-  imageBase64: string,
-  onStream?: StreamCallback,
-  onStage?: StageCallback,
-  onDebug?: DebugCallback
-): Promise<GamePart[]> => {
-  
-  // Reset debug data for new run
-  debugData = {
-    directorOutput: null,
-    workerOutputs: [],
-    workerErrors: [],
-    architectOutput: null,
-    apiLogs: []
-  };
-  
-  // Stage 1: Director
-  onStage?.('director', 'Discovering parts...');
-  const manifests = await runDirector(imageBase64, onStream, onDebug);
-  onStage?.('director', `Found ${manifests.length} parts`);
-
-  // Stage 2: Workers (parallel with error handling)
-  onStage?.('workers', `Processing ${manifests.length} parts in parallel...`);
-  
-  const workerResults = await Promise.allSettled(
-    manifests.map(m => runWorker(imageBase64, m, onDebug))
-  );
-  
-  // Separate successful results from failures
-  const geometries: WorkerGeometry[] = [];
-  const errors: WorkerError[] = [];
-  
-  workerResults.forEach((result, index) => {
-    const manifest = manifests[index];
-    if (result.status === 'fulfilled') {
-      geometries.push(result.value);
-    } else {
-      const errorMsg = result.reason instanceof Error 
-        ? result.reason.message 
-        : String(result.reason);
-      errors.push({
-        manifestId: manifest.id,
-        manifestName: manifest.name,
-        error: errorMsg,
-        retryCount: 0
-      });
-      console.error(`Worker failed for ${manifest.name}:`, errorMsg);
-    }
-  });
-  
-  debugData.workerErrors = errors;
-  onDebug?.({ ...debugData });
-  
-  if (errors.length > 0) {
-    onStage?.('workers', `⚠️ ${geometries.length} succeeded, ${errors.length} failed`);
-  } else {
-    onStage?.('workers', 'Geometry extraction complete');
-  }
-
-  // Stage 3: Architect
   onStage?.('architect', 'Building hierarchy and rigging...');
   const parts = await runArchitect(imageBase64, manifests, geometries, onStream, onDebug);
-  onStage?.('architect', 'Rigging complete');
 
-  onStage?.('complete', `Pipeline complete: ${parts.length} parts rigged`);
-  return parts;
+  debugData.architectOutput = parts;
+  onDebug?.({ ...debugData });
+
+  return { ...debugData };
 };
+
+
 
 // Retry a single failed worker
 export const retryWorker = async (
@@ -563,13 +553,13 @@ export const retryWorker = async (
     console.error(`Manifest ${manifestId} not found`);
     return null;
   }
-  
+
   try {
     const geometry = await runWorker(imageBase64, manifest, onDebug);
-    
+
     // Update debug data - remove from errors, add to outputs
     debugData.workerErrors = debugData.workerErrors.filter(e => e.manifestId !== manifestId);
-    
+
     // Check if already exists (shouldn't, but be safe)
     const existingIdx = debugData.workerOutputs.findIndex(w => w.id === manifestId);
     if (existingIdx >= 0) {
@@ -577,7 +567,7 @@ export const retryWorker = async (
     } else {
       debugData.workerOutputs.push(geometry);
     }
-    
+
     onDebug?.({ ...debugData });
     return geometry;
   } catch (error) {
@@ -607,20 +597,24 @@ export const retryDirector = async (
   const startTime = Date.now();
 
   let prompt: string;
-  
+
   if (options.mode === 'conversational' && options.previousResult) {
     prompt = `
-Role: You are the Director - a project manager for 2D game asset rigging.
-Task: Review and improve the part identification for this game asset.
+Role: You are a Senior 2D Rigger specializing in efficient game optimization.
+Task: Refine the breakdown of this asset into "Rigid Bodies" for cutout animation.
 
 Your previous analysis:
 ${options.previousResult}
 
-${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'Please re-analyze more carefully.'}
+${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'The previous breakdown had too many unnecessary pieces.'}
 
-IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0) where 0.0 is top/left and 1.0 is bottom/right.
+CRITICAL INSTRUCTION: MERGE parts that move together.
+- If Part A is bolted, welded, or stuck to Part B and cannot rotate/move independently, they are ONE single part.
+- Do not separate hubcaps from wheels.
+- Do not separate decorations from the chassis/body.
+- Do not separate screws, bolts, or highlights.
 
-Provide an UPDATED list addressing the feedback. For each part:
+Provide an UPDATED list. For each merged kinematic part:
 1. id: Unique snake_case identifier
 2. name: Human-readable display name
 3. visual_anchor: [x, y] - A point (0-1 relative) INSIDE this part
@@ -628,22 +622,28 @@ Provide an UPDATED list addressing the feedback. For each part:
 `;
   } else {
     prompt = `
-Role: You are the Director - a project manager for 2D game asset rigging.
-Task: Identify and catalog all distinct parts in this game asset image for cutout animation.
+Role: You are a Senior 2D Rigger specializing in kinematic mechanics.
+Task: Identify the main "Rigid Bodies" (kinematic groups) in this game asset.
 
 IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0) where 0.0 is top/left and 1.0 is bottom/right.
 
-For each part, provide:
-1. id: Unique snake_case identifier (e.g., "left_wheel", "upper_arm")
+Definition of a "Part":
+A part is a group of visual elements that moves as a single rigid unit.
+- If multiple objects move together (e.g., a rider and their saddle, or a wheel and its hubcap), they must be ONE part.
+- Ignore internal seams, bolts, or color changes unless they represent a mechanical joint.
+
+For each Rigid Body, provide:
+1. id: Unique snake_case identifier (e.g., "rear_wheel_assembly", "main_chassis")
 2. name: Human-readable display name
 3. visual_anchor: [x, y] - A point (0-1 relative) that falls INSIDE this specific part.
 4. type_hint: One of [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
 
 Rules:
-- List ALL distinct moving or separable parts
-- Ensure visual_anchor is clearly inside each part, not on edges
-- Be specific with names ("Left Wheel" vs "Right Wheel")
+- Prioritize minimal, functional parts over detailed separation.
+- Ensure visual_anchor is clearly inside the main mass of the part.
+- Group static attachments (stickers, armor plates, handles) into their parent body.
 `;
+
   }
 
   const responseSchema = {
@@ -691,17 +691,17 @@ Rules:
   onStream?.(fullText, true);
 
   if (!fullText) throw new Error("Director retry: No response");
-  
+
   addApiLog('director', prompt, fullText, Date.now() - startTime);
   const result = JSON.parse(fullText) as PartManifest[];
-  
+
   // Update debug data
   debugData.directorOutput = result;
   debugData.workerOutputs = []; // Clear workers since manifests changed
   debugData.workerErrors = [];
   debugData.architectOutput = null;
   onDebug?.({ ...debugData });
-  
+
   return result;
 };
 
@@ -714,7 +714,7 @@ export const retryArchitect = async (
 ): Promise<GamePart[]> => {
   const manifests = debugData.directorOutput;
   const geometries = debugData.workerOutputs;
-  
+
   if (!manifests || geometries.length === 0) {
     throw new Error("Cannot retry Architect: missing Director or Worker data");
   }
@@ -729,7 +729,7 @@ export const retryArchitect = async (
   }).join('\n');
 
   let prompt: string;
-  
+
   if (options.mode === 'conversational' && options.previousResult) {
     prompt = `
 Role: You are the Rigging Architect - the lead engineer assembling the final rig.
@@ -816,7 +816,7 @@ Task:
   onStream?.(fullText, true);
 
   if (!fullText) throw new Error("Architect retry: No response");
-  
+
   const rigging = JSON.parse(fullText) as Array<{
     id: string;
     name: string;
@@ -831,7 +831,7 @@ Task:
   const parts = rigging.map(rig => {
     const geo = geometries.find(g => g.id === rig.id);
     const manifest = manifests.find(m => m.id === rig.id);
-    
+
     if (!geo || !manifest) {
       throw new Error(`Missing data for part ${rig.id}`);
     }
@@ -848,10 +848,10 @@ Task:
       confidence: geo.confidence
     };
   });
-  
+
   debugData.architectOutput = parts;
   onDebug?.({ ...debugData });
-  
+
   return parts;
 };
 
@@ -874,9 +874,9 @@ export const retryWorkerWithFeedback = async (
 
   // Find previous result if in conversational mode
   const previousGeo = debugData.workerOutputs.find(w => w.id === manifestId);
-  
+
   let prompt: string;
-  
+
   if (options.mode === 'conversational' && previousGeo) {
     const hasCompositedImage = !!options.compositedImage;
     prompt = `
@@ -958,12 +958,12 @@ Output format (all coordinates 0-1 relative):
     const parts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [
       { inlineData: { mimeType: "image/png", data: imageBase64 } }
     ];
-    
+
     // Add composited image (with shape overlay) for conversational mode
     if (options.mode === 'conversational' && options.compositedImage) {
       parts.push({ inlineData: { mimeType: "image/png", data: options.compositedImage } });
     }
-    
+
     parts.push({ text: prompt });
 
     const response = await ai.models.generateContent({
@@ -977,10 +977,10 @@ Output format (all coordinates 0-1 relative):
 
     const text = response.text;
     if (!text) throw new Error(`Worker ${manifest.id}: No response`);
-    
+
     addApiLog('workers', prompt, text, Date.now() - startTime);
     const result = JSON.parse(text);
-    
+
     const geometry: WorkerGeometry = {
       id: manifest.id,
       shape: normalizeShape(result.shape),
@@ -988,7 +988,7 @@ Output format (all coordinates 0-1 relative):
       amodal_completed: result.amodal_completed,
       confidence: result.confidence
     };
-    
+
     // Update debug data - remove from errors, update/add to outputs
     debugData.workerErrors = debugData.workerErrors.filter(e => e.manifestId !== manifestId);
     const existingIdx = debugData.workerOutputs.findIndex(w => w.id === manifestId);
@@ -997,7 +997,7 @@ Output format (all coordinates 0-1 relative):
     } else {
       debugData.workerOutputs.push(geometry);
     }
-    
+
     onDebug?.({ ...debugData });
     return geometry;
   } catch (error) {
@@ -1032,8 +1032,8 @@ export const generateAssetArt = async (
     const num = index + 1;
     const target = p.atlasRect!;
     const bboxStr = `[${p.bbox.map(v => v.toFixed(3)).join(',')}]`;
-    const shapeDesc = p.shape.type === 'path' 
-      ? `path` 
+    const shapeDesc = p.shape.type === 'path'
+      ? `path`
       : `${p.shape.type}`;
     return `- Box #${num} = "${p.name}": (Shape: ${shapeDesc}, BBox: ${bboxStr}) -> (Target rect: [${target.x},${target.y},${target.w},${target.h}])`;
   }).join("\n");

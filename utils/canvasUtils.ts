@@ -139,6 +139,99 @@ const drawPrimitive = (
   ctx.stroke();
 };
 
+// Helper: Normalize shape from global 0-1 coords to local 0-1 coords relative to bbox, then draw in destination rect
+const drawNormalizedPrimitive = (
+  ctx: CanvasRenderingContext2D,
+  shape: SVGPrimitive,
+  bbox: [number, number, number, number], // part bbox 0-1
+  destRect: Rect
+): void => {
+  const bboxW = bbox[2] - bbox[0];
+  const bboxH = bbox[3] - bbox[1];
+
+  // Helper to map global x (0-1) to local pixels
+  const mapX = (gx: number) => {
+    const localRel = (gx - bbox[0]) / bboxW;
+    return destRect.x + localRel * destRect.w;
+  };
+
+  // Helper to map global y (0-1) to local pixels
+  const mapY = (gy: number) => {
+    const localRel = (gy - bbox[1]) / bboxH;
+    return destRect.y + localRel * destRect.h;
+  };
+
+  // Helper for scaling dimensions
+  const scaleW = (gw: number) => (gw / bboxW) * destRect.w;
+  const scaleH = (gh: number) => (gh / bboxH) * destRect.h;
+
+  ctx.beginPath();
+  switch (shape.type) {
+    case 'circle': {
+      const cx = mapX(clampRel(shape.cx));
+      const cy = mapY(clampRel(shape.cy));
+      // Circle radius likely scaled by width or average? BBox might be non-uniform aspect.
+      // Usually r is relative to image width.
+      // We map r to the local width scale.
+      const r = scaleW(clampRel(shape.r));
+      ctx.arc(cx, cy, Math.max(1, r), 0, Math.PI * 2);
+      break;
+    }
+    case 'ellipse': {
+      const cx = mapX(clampRel(shape.cx));
+      const cy = mapY(clampRel(shape.cy));
+      const rx = scaleW(clampRel(shape.rx));
+      const ry = scaleH(clampRel(shape.ry));
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      break;
+    }
+    case 'rect': {
+      const x = mapX(clampRel(shape.x));
+      const y = mapY(clampRel(shape.y));
+      const w = scaleW(clampRel(shape.width));
+      const h = scaleH(clampRel(shape.height));
+      if (shape.rx) {
+        const rx = scaleW(clampRel(shape.rx));
+        ctx.roundRect(x, y, w, h, rx);
+      } else {
+        ctx.rect(x, y, w, h);
+      }
+      break;
+    }
+    case 'path': {
+      const bboxW = bbox[2] - bbox[0];
+      const bboxH = bbox[3] - bbox[1];
+
+      // Avoid division by zero
+      if (bboxW <= 0 || bboxH <= 0) break;
+
+      const sx = destRect.w / bboxW;
+      const sy = destRect.h / bboxH;
+
+      const tx = destRect.x - (bbox[0] * sx);
+      const ty = destRect.y - (bbox[1] * sy);
+
+      ctx.save();
+      ctx.translate(tx, ty);
+      ctx.scale(sx, sy);
+
+      // Counter-scale line width so it doesn't look huge
+      const finalScale = Math.max(sx, sy);
+      ctx.lineWidth = ctx.lineWidth / finalScale;
+
+      try {
+        const p = new Path2D(shape.d);
+        ctx.stroke(p);
+      } catch (e) {
+        console.warn("Failed to draw path in atlas", e);
+      }
+      ctx.restore();
+      return;
+    }
+  }
+  ctx.stroke();
+};
+
 const packRow = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
   const totalArea = partsWithSize.reduce((sum, p) => sum + p.srcW * p.srcH, 0);
   const availableArea = (resolution - BOX_PADDING * 2) ** 2;
@@ -281,14 +374,24 @@ const drawAtlas = (
     const num = p.index + 1;
 
     // Draw dashed bounding box in atlas
-    ctx.strokeStyle = "#000000";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#94a3b8"; // slate-400
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 2]);
     drawRect(ctx, rect.x, rect.y, rect.w, rect.h);
     ctx.setLineDash([]);
 
-    const fontSize = Math.min(rect.w, rect.h) * 0.6;
-    ctx.fillStyle = "#000000";
+    // Draw Vector Shape (Normalized to slot)
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 2;
+    // We pass the ORIGINAL part bbox (which the shape is relative to)
+    // p.part.bbox was clamped in calculatePartSizes, we use that.
+    drawNormalizedPrimitive(ctx, p.part.shape, p.part.bbox, rect);
+
+    // Draw Number Label
+    const fontSize = Math.min(rect.w, rect.h) * 0.4; // Large number
+
+    // Draw distinct number behind
+    ctx.fillStyle = "#e2e8f0"; // slate-200, solid light gray fallback
     ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -309,14 +412,14 @@ const drawAnnotatedOriginal = (
 
   // Color palette for different parts
   const colors = [
-    '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', 
+    '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6',
     '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#06b6d4'
   ];
 
   parts.forEach((part, index) => {
     const num = index + 1;
     const color = colors[index % colors.length];
-    
+
     // Clamp and convert relative bbox to pixels
     const clampedBbox = clampBbox(part.bbox);
     const bounds = bboxToRect(clampedBbox, size);
@@ -329,7 +432,7 @@ const drawAnnotatedOriginal = (
     ctx.setLineDash([6, 3]);
     ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
     ctx.setLineDash([]);
-    
+
     // Draw the SVG primitive shape
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
@@ -340,12 +443,12 @@ const drawAnnotatedOriginal = (
     ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    
+
     // Background for text
     const textMetrics = ctx.measureText(`${num}`);
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(cx - textMetrics.width/2 - 4, cy - fontSize/2 - 2, textMetrics.width + 8, fontSize + 4);
-    
+    ctx.fillRect(cx - textMetrics.width / 2 - 4, cy - fontSize / 2 - 2, textMetrics.width + 8, fontSize + 4);
+
     ctx.fillStyle = color;
     ctx.fillText(`${num}`, cx, cy);
   });

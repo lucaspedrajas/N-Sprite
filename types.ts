@@ -133,7 +133,7 @@ export interface PipelineDebugData {
 
 export interface AppState {
   originalImage: string | null;
-  originalImageDimensions: { w: number; h: number } | null;
+  originalImageDimensions: { width: number; height: number } | null;
   analysisResults: GamePart[] | null;
   annotatedOriginalImage: string | null;
   preparedAtlasImage: string | null;
@@ -144,6 +144,13 @@ export interface AppState {
   resolution: AtlasResolution;
   error: string | null;
   activeStep: number;
+}
+
+export interface StreamState {
+  thinkingText: string;
+  isStreaming: boolean;
+  currentStage: string;
+  stageMessage: string;
 }
 
 export const MOVEMENT_LABELS: Record<MovementType, string> = {
