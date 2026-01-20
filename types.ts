@@ -14,6 +14,9 @@ export interface Rect {
   h: number;
 }
 
+export type SegmentationMethod = 'gemini' | 'sam3';
+export type SegmentationMode = 'auto' | SegmentationMethod;
+
 // Bounding box as [min_x, min_y, max_x, max_y] - can be relative (0-1) or pixel
 export type BBox = [number, number, number, number];
 
@@ -67,6 +70,7 @@ export interface PartManifest {
   visual_anchor: [number, number];  // [x, y] relative 0-1, point inside the part
   bbox: BBox; // Estimated bounding box [min_x, min_y, max_x, max_y] relative 0-1
   type_hint: PartTypeHint;
+  segmentation_strategy: 'gemini' | 'sam3';
 }
 
 // Stage 2: Worker output - Geometry per part
@@ -130,6 +134,23 @@ export interface PipelineDebugData {
   workerErrors: WorkerError[];
   architectOutput: GamePart[] | null;
   apiLogs: APICallLog[];
+  workerHistory: WorkerHistory[];
+}
+
+export interface WorkerEvent {
+  timestamp: number;
+  turn: number;
+  type: 'generation' | 'evaluation';
+  prompt?: string;
+  feedback?: string;
+  verdict?: 'GOOD' | 'IMPROVE';
+  compositeImageBase64?: string;
+  shape?: SVGPrimitive;
+}
+
+export interface WorkerHistory {
+  manifestId: string;
+  events: WorkerEvent[];
 }
 
 export interface AppState {

@@ -1,8 +1,10 @@
 import React, { useState, useRef } from 'react';
 import { Upload, ArrowRight, Layers, Wand2, Image as ImageIcon, Palette, Monitor, BookOpen, FlaskConical, ChevronLeft, ChevronRight, Cpu, GitBranch, Grid, Sparkles, Scissors, Play, CheckCircle, RefreshCw, MessageSquare, RotateCcw, Terminal } from 'lucide-react';
-import { AppState, AtlasResolution, PipelineDebugData, APICallLog, PartManifest, WorkerGeometry, GamePart, StreamState } from './types';
+import { AppState, AtlasResolution, PipelineDebugData, APICallLog, PartManifest, WorkerGeometry, GamePart, StreamState, SegmentationMethod, SegmentationMode } from './types';
 import { runDirectorOnly, runWorkersOnly, runArchitectOnly, generateAssetArt as generateAssetArtGemini, StreamCallback, StageCallback, DebugCallback, retryWorker, retryDirector, retryArchitect, retryWorkerWithFeedback, RetryOptions, getDebugData } from './services/geminiService';
-import { generateAssetArt as generateAssetArtFal } from './services/falService';
+
+import { generateAssetArt as generateAssetArtFal, segmentPartSAM3 } from './services/falService';
+import { maskToSVG } from './utils/vectorUtils';
 import { createAtlasPreparation, PackingAlgorithm, removeBackgroundColor, fitImageToSquare } from './utils/canvasUtils';
 import { AtlasViewer } from './components/AtlasViewer';
 import { GeneratedAtlasViewer } from './components/GeneratedAtlasViewer';
@@ -41,6 +43,8 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('pipeline');
   const [imageModel, setImageModel] = useState<ImageModel>('gemini');
   const [packingAlgorithm, setPackingAlgorithm] = useState<PackingAlgorithm>('row');
+  const [rotation, setRotation] = useState<number>(0);
+  const [segmentationMethod, setSegmentationMethod] = useState<SegmentationMode>('auto');
 
   // Stream state for localized loading messages
   const [streamState, setStreamState] = useState<StreamState>({
@@ -132,18 +136,110 @@ export default function App() {
     setStreamState({ thinkingText: '', isStreaming: true, currentStage: 'workers', stageMessage: 'Extracting geometries...' });
 
     try {
-      // Reuse existing debugData context
-      const updatedDebugData = await runWorkersOnly(
-        state.originalImage,
-        debugData.directorOutput,
-        handleStreamUpdate,
-        handleStageUpdate,
-        handleDebugUpdate,
-        debugData // pass existing context
-      );
-      setDebugData(updatedDebugData);
-      setDebugData(updatedDebugData);
-      setState(prev => ({ ...prev, isAnalyzing: false })); // activeStep already 3
+      if (segmentationMethod === 'sam3' || segmentationMethod === 'auto') {
+        const manifests = debugData.directorOutput;
+        const workerOutputs: WorkerGeometry[] = [];
+        const workerErrors: any[] = [];
+        let geminiManifests: PartManifest[] = [];
+
+        // Filter parts based on strategy if 'auto', otherwise all SAM3
+        const sam3Manifests = segmentationMethod === 'auto'
+          ? manifests.filter(m => m.segmentation_strategy === 'sam3')
+          : manifests;
+
+        if (segmentationMethod === 'auto') {
+          geminiManifests = manifests.filter(m => m.segmentation_strategy !== 'sam3');
+        }
+
+        console.log(`Hybrid Execution: ${sam3Manifests.length} SAM3 parts, ${geminiManifests.length} Gemini parts`);
+
+        // 1. Process SAM3 parts
+        let completed = 0;
+        for (const manifest of sam3Manifests) {
+          handleStageUpdate('workers', `Segmenting ${manifest.name} (SAM3) (${completed + 1}/${sam3Manifests.length})...`);
+          try {
+            // Segment with SAM3
+            const maskBase64 = await segmentPartSAM3(state.originalImage, manifest.bbox, manifest.name);
+            // Vectorize
+            const vectorShape = await maskToSVG(maskBase64);
+
+            const geometry: WorkerGeometry = {
+              id: manifest.id,
+              shape: vectorShape,
+              bbox: manifest.bbox,
+              amodal_completed: false,
+              confidence: 1.0
+            };
+            workerOutputs.push(geometry);
+          } catch (e: any) {
+            console.error(`Error processing ${manifest.name}:`, e);
+            workerErrors.push({
+              manifestId: manifest.id,
+              manifestName: manifest.name,
+              error: e.message || String(e),
+              retryCount: 0
+            });
+          }
+          completed++;
+        }
+
+        // 2. Process Gemini parts (if any)
+        if (geminiManifests.length > 0) {
+          handleStageUpdate('workers', `Processing ${geminiManifests.length} parts with Gemini...`);
+          // We reuse runWorkersOnly but need to be careful as it expects the full director output usually?
+          // Actually runWorkersOnly takes manual manifest list.
+          // However, runWorkersOnly returns a NEW PipelineDebugData with workerOutputs. 
+          // We need to merge that.
+
+          try {
+            // Create a temporary debugData context only containing Gemini manifests so the prompt focuses on them?
+            // Or just pass the list. runWorkersOnly takes manifests as arg 2.
+            const geminiDebugData = await runWorkersOnly(
+              state.originalImage,
+              geminiManifests,
+              handleStreamUpdate,
+              handleStageUpdate,
+              handleDebugUpdate, // This might trigger updates, be careful
+              debugData // pass context
+            );
+
+            if (geminiDebugData.workerOutputs) {
+              workerOutputs.push(...geminiDebugData.workerOutputs);
+            }
+            if (geminiDebugData.workerErrors) {
+              workerErrors.push(...geminiDebugData.workerErrors);
+            }
+          } catch (e: any) {
+            console.error("Error in Gemini batch:", e);
+            // Fallback: mark all gemini parts as failed?
+            geminiManifests.forEach(m => workerErrors.push({
+              manifestId: m.id, manifestName: m.name, error: "Batch Gemini Failed: " + e.message, retryCount: 0
+            }));
+          }
+        }
+
+        const updatedDebugData: PipelineDebugData = {
+          ...debugData,
+          workerOutputs,
+          workerErrors
+        };
+
+        setDebugData(updatedDebugData);
+        setState(prev => ({ ...prev, isAnalyzing: false }));
+      } else {
+        // Existing Gemini flow
+        // Reuse existing debugData context
+        const updatedDebugData = await runWorkersOnly(
+          state.originalImage,
+          debugData.directorOutput,
+          handleStreamUpdate,
+          handleStageUpdate,
+          handleDebugUpdate,
+          debugData // pass existing context
+        );
+        setDebugData(updatedDebugData);
+        setState(prev => ({ ...prev, isAnalyzing: false })); // activeStep already 3
+      }
     } catch (err) {
       handleError(err);
     }
@@ -389,6 +485,8 @@ export default function App() {
                     onConfirm={handleRunWorkers}
                     onRetryFresh={async () => { if (state.originalImage) await handleRunDirector(state.originalImage); }}
                     onRetryWithFeedback={async (fb) => { if (state.originalImage) await retryDirector(state.originalImage, { mode: 'conversational', userFeedback: fb }, undefined, setDebugData); }}
+                    segmentationMethod={segmentationMethod}
+                    onMethodChange={setSegmentationMethod}
                   />
                 </div>
               )}

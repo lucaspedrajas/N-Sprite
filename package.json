@@ -13,9 +13,11 @@
     "@google/genai": "^1.34.0",
     "@types/matter-js": "^0.20.2",
     "html2canvas": "^1.4.1",
+    "imagetracerjs": "^1.2.6",
     "konva": "^10.2.0",
     "lucide-react": "^0.562.0",
     "matter-js": "^0.20.0",
+    "potpack": "^2.1.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-konva": "^19.2.1"

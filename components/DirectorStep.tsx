@@ -1,6 +1,6 @@
 import React from 'react';
 import { Layers } from 'lucide-react';
-import { PipelineDebugData, StreamState } from '../types';
+import { PipelineDebugData, StreamState, SegmentationMode } from '../types';
 import { StageControls } from './StageControls';
 
 interface DirectorStepProps {
@@ -11,6 +11,8 @@ interface DirectorStepProps {
     onConfirm: () => void;
     onRetryFresh: () => Promise<void>;
     onRetryWithFeedback: (feedback: string) => Promise<void>;
+    segmentationMethod: SegmentationMode;
+    onMethodChange: (method: SegmentationMode) => void;
 }
 
 export const DirectorStep: React.FC<DirectorStepProps> = ({
@@ -20,7 +22,9 @@ export const DirectorStep: React.FC<DirectorStepProps> = ({
     streamState,
     onConfirm,
     onRetryFresh,
-    onRetryWithFeedback
+    onRetryWithFeedback,
+    segmentationMethod,
+    onMethodChange
 }) => {
     return (
         <div className="bg-slate-800 rounded-xl p-5 shadow-lg border border-slate-700/50">
@@ -86,8 +90,14 @@ export const DirectorStep: React.FC<DirectorStepProps> = ({
                             {/* Part list */}
                             <div className="flex-1 grid grid-cols-2 gap-2 max-h-64 overflow-y-auto custom-scrollbar">
                                 {debugData.directorOutput.map((manifest, i) => (
-                                    <div key={manifest.id} className="bg-slate-900 rounded-lg p-2 border border-slate-700">
-                                        <div className="flex items-center gap-2 mb-1">
+                                    <div key={manifest.id} className="bg-slate-900 rounded-lg p-2 border border-slate-700 relative overflow-hidden">
+                                        {/* Strategy Indicator */}
+                                        <div className={`absolute top-0 right-0 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider ${manifest.segmentation_strategy === 'sam3' ? 'bg-violet-900/80 text-violet-200' : 'bg-indigo-900/80 text-indigo-200'
+                                            }`}>
+                                            {manifest.segmentation_strategy || 'GEMINI'}
+                                        </div>
+
+                                        <div className="flex items-center gap-2 mb-1 mt-2">
                                             <div className="w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold text-white" style={{ backgroundColor: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899'][i % 8] }}>
                                                 {i + 1}
                                             </div>
@@ -96,6 +106,40 @@ export const DirectorStep: React.FC<DirectorStepProps> = ({
                                         <div className="text-xs text-slate-500">{manifest.type_hint}</div>
                                     </div>
                                 ))}
+                            </div>
+                        </div>
+
+                        {/* Segmentation Method Selector */}
+                        <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-700">
+                            <label className="text-xs font-semibold text-slate-400 mb-2 block uppercase tracking-wider">Segmentation Strategy</label>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => onMethodChange('auto')}
+                                    className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${segmentationMethod === 'auto'
+                                        ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20'
+                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'}`}
+                                >
+                                    Hybrid (Auto)
+                                    <span className="block text-[10px] opacity-70 font-normal">Per-part selection</span>
+                                </button>
+                                <button
+                                    onClick={() => onMethodChange('sam3')}
+                                    className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${segmentationMethod === 'sam3'
+                                        ? 'bg-violet-600 text-white shadow-lg shadow-violet-500/20'
+                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'}`}
+                                >
+                                    Force SAM3
+                                    <span className="block text-[10px] opacity-70 font-normal">All parts</span>
+                                </button>
+                                <button
+                                    onClick={() => onMethodChange('gemini')}
+                                    className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${segmentationMethod === 'gemini'
+                                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'}`}
+                                >
+                                    Force Gemini
+                                    <span className="block text-[10px] opacity-70 font-normal">All parts</span>
+                                </button>
                             </div>
                         </div>
 

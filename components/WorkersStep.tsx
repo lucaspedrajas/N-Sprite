@@ -4,6 +4,7 @@ import {
   PartManifest,
   WorkerGeometry,
   WorkerError,
+  WorkerHistory,
   bboxToRect
 } from '../types';
 import { loadImage } from '../utils/canvasUtils';
@@ -41,9 +42,11 @@ const WorkerCanvas: React.FC<{
   index: number;
   onRetry?: (options: RetryOptions) => void;
   isRetrying?: boolean;
-}> = ({ imageBase64, geometry, manifest, color, index, onRetry, isRetrying }) => {
+  history?: WorkerHistory;
+}> = ({ imageBase64, geometry, manifest, color, index, onRetry, isRetrying, history }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [feedback, setFeedback] = useState('');
 
   useEffect(() => {
@@ -141,10 +144,47 @@ const WorkerCanvas: React.FC<{
   };
 
   return (
-    <div className="bg-slate-800 rounded-lg p-2 border border-slate-700">
+    <div className="bg-slate-800 rounded-lg p-2 border border-slate-700 relative">
+      {/* History Overlay */}
+      {showHistory && history && (
+        <div className="absolute inset-0 bg-slate-900/95 z-10 flex flex-col p-2 overflow-hidden rounded-lg">
+          <div className="flex justify-between items-center mb-2 border-b border-slate-700 pb-1">
+            <span className="text-xs font-bold text-white">Worker History</span>
+            <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-white"><XCircle className="w-4 h-4" /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
+            {history.events.map((ev, i) => (
+              <div key={i} className="text-[10px] p-2 bg-slate-800 rounded border border-slate-700">
+                <div className="flex justify-between text-slate-400 mb-1">
+                  <span>Turn {ev.turn}</span>
+                  <span className="uppercase font-bold" style={{ color: ev.type === 'generation' ? '#22c55e' : '#3b82f6' }}>{ev.type}</span>
+                </div>
+                {ev.verdict && (
+                  <div className={`font-bold mb-1 ${ev.verdict === 'GOOD' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    QA: {ev.verdict}
+                  </div>
+                )}
+                {ev.feedback && <div className="text-slate-300 italic mb-1">"{ev.feedback}"</div>}
+                {ev.compositeImageBase64 && (
+                  <img src={`data:image/png;base64,${ev.compositeImageBase64}`} className="w-full rounded border border-slate-600 mt-1" alt="Turn Result" />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mb-1">
         <div className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
         <span className="text-xs font-medium text-slate-300 truncate flex-1">{manifest?.name || geometry.id}</span>
+        {history && history.events.length > 0 && (
+          <button
+            onClick={() => setShowHistory(true)}
+            className="text-[10px] bg-slate-700 hover:bg-slate-600 px-1.5 py-0.5 rounded text-slate-300"
+          >
+            {history.events.length} Turns
+          </button>
+        )}
         <span className="text-xs text-slate-500">{Math.round(geometry.confidence * 100)}%</span>
         {onRetry && (
           <button
@@ -163,7 +203,7 @@ const WorkerCanvas: React.FC<{
       </div>
 
       {showFeedback && onRetry && (
-        <div className="mt-2 p-2 bg-slate-900 rounded border border-slate-600 space-y-2">
+        <div className="mt-2 p-2 bg-slate-900 rounded border border-slate-600 space-y-2 relative z-20">
           <div className="flex gap-1">
             <button
               onClick={handleFreshRetry}
@@ -297,6 +337,7 @@ export const WorkersStep: React.FC<WorkersStepProps> = ({
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-2 mb-3">
               {debugData?.workerOutputs?.map((geo, i) => {
                 const manifest = debugData.directorOutput?.find(m => m.id === geo.id);
+                const history = debugData.workerHistory?.find(h => h.manifestId === geo.id);
                 return (
                   <WorkerCanvas
                     key={geo.id}
@@ -307,6 +348,7 @@ export const WorkersStep: React.FC<WorkersStepProps> = ({
                     index={i}
                     onRetry={onRetryWorker ? (options) => handleRetryWorker(geo.id, options) : undefined}
                     isRetrying={retryingIds.has(geo.id)}
+                    history={history}
                   />
                 );
               })}

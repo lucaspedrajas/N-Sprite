@@ -32,9 +32,8 @@ interface PipelineNodeProps {
 }
 
 const PipelineNode: React.FC<PipelineNodeProps> = ({ label, description, image, isComplete, metadata }) => (
-  <div className={`w-full max-w-md border rounded-lg overflow-hidden transition-all ${
-    isComplete ? 'border-blue-400 bg-white shadow-md' : 'border-slate-200 bg-slate-50'
-  }`}>
+  <div className={`w-full max-w-md border rounded-lg overflow-hidden transition-all ${isComplete ? 'border-blue-400 bg-white shadow-md' : 'border-slate-200 bg-slate-50'
+    }`}>
     <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50">
       {isComplete ? (
         <CheckCircle className="w-4 h-4 text-emerald-500" />
@@ -46,8 +45,8 @@ const PipelineNode: React.FC<PipelineNodeProps> = ({ label, description, image, 
     </div>
     {image ? (
       <div className="p-2 bg-slate-100">
-        <img 
-          src={`data:image/png;base64,${image}`} 
+        <img
+          src={`data:image/png;base64,${image}`}
           alt={label}
           className="w-full h-32 object-contain bg-white rounded border border-slate-200"
         />
@@ -66,9 +65,9 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
   const pipelineRef = useRef<HTMLDivElement>(null);
 
   const hasAnyResult = pipelineState && (
-    pipelineState.originalImage || 
-    pipelineState.annotatedOriginalImage || 
-    pipelineState.preparedAtlasImage || 
+    pipelineState.originalImage ||
+    pipelineState.annotatedOriginalImage ||
+    pipelineState.preparedAtlasImage ||
     pipelineState.generatedAtlasImage
   );
 
@@ -101,7 +100,7 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
           Automated Decomposition & Reconstruction for 2D Rigged Game Assets
         </h2>
         <div className="text-slate-500 italic mt-4">
-          Technical Report v2.0 • Polygon Mask Architecture
+          Technical Report v3.0 • Hybrid Segmentation Architecture
         </div>
       </div>
 
@@ -111,8 +110,9 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
             <FileText className="w-5 h-5" /> Abstract
           </h2>
           <p className="leading-relaxed text-justify text-slate-700">
-            This paper introduces the <strong>Neural Sprite Pipeline</strong>, an automated workflow for converting static 2D concept art into rigged, articulated game assets. 
-            By leveraging Multimodal Large Language Models (MLLMs) for structural inference and Generative Image Models for in-painting, we demonstrate a method to deconstruct single-view images into logically segmented parts using polygon masks, reconstruct occluded areas, and generate automated kinematic rigs. Input images are normalized to 1024×1024 resolution for consistent coordinate space. The current implementation utilizes Google's Gemini family of models, but the architecture is designed to be model-agnostic.
+            This paper introduces the <strong>Neural Sprite Pipeline (N-Sprite)</strong>, an automated workflow for converting static 2D concept art into rigged, articulated game assets.
+            By leveraging a <strong>Sequential Multi-Persona Workflow</strong>, the system dynamically selects the optimal segmentation strategy—combining the reasoning capabilities of Multimodal Large Language Models (MLLMs) with the precision of specialized segmentation models like SAM3.
+            The pipeline deconstructs single-view images into logically segmented "Rigid Bodies," reconstructs occluded areas using generative in-painting, and builds automated kinematic rigs. The v3.0 implementation integrates Google's Gemini 3 Flash model for semantic reasoning and Fal.ai's SAM3 for high-fidelity mask generation, orchestrated by a central Director module.
           </p>
         </section>
 
@@ -120,68 +120,90 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
           <h2 className="text-xl font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
             <Cpu className="w-5 h-5" /> I. Methodology
           </h2>
-          
+
           <div className="pl-4 border-l-4 border-slate-200 space-y-6">
             <div>
               <h3 className="font-bold text-lg mb-2">A. Image Normalization</h3>
               <p className="text-slate-700 mb-2">
-                Input images are first normalized to a 1024×1024 pixel canvas with a white background. 
-                The original image is scaled to fit while preserving aspect ratio, then centered. This ensures consistent coordinate space for all subsequent operations.
+                Input images are pre-processed to ensure a consistent coordinate space. They are resized to fit a 1024×1024 pixel canvas, padded with a white background to maintain aspect ratio, and centered to maximize resolution for small details.
               </p>
             </div>
 
             <div>
-              <h3 className="font-bold text-lg mb-2">B. Semantic Decomposition (Structural Inference)</h3>
+              <h3 className="font-bold text-lg mb-2">B. Stage 1: The Director (Semantic Decomposition)</h3>
               <p className="text-slate-700 mb-2">
-                The normalized image is analyzed by a Vision-Language Model to identify functional sub-components (e.g., wheels, chassis, limbs). 
-                The model outputs a structured JSON schema defining:
+                The <strong>Director</strong> (powered by Gemini 3 Flash) performs the initial high-level analysis. It acts as a strategist rather than generating pixel-perfect masks.
+                It identifies functional sub-components (e.g., "Left Upper Arm," "Wheel Hub") and assigns a critical <strong>segmentation_strategy</strong>:
               </p>
               <ul className="list-disc list-inside text-sm text-slate-600 ml-4">
-                <li>Hierarchical relationships (Parent/Child nodes)</li>
-                <li>Polygon masks (4-6 vertex outlines in pixel coordinates)</li>
-                <li>Inferred movement types (Rotation, Translation, Pulse)</li>
-                <li>Pivot points in world pixel coordinates</li>
+                <li><strong>Gemini</strong>: Selected for simple geometric shapes (circles, rectangles, boxy joints).</li>
+                <li><strong>SAM3</strong>: Selected for complex, organic, or irregular shapes (hair, cloth, muscles).</li>
               </ul>
             </div>
 
             <div>
-              <h3 className="font-bold text-lg mb-2">C. Atlas Layout Optimization</h3>
+              <h3 className="font-bold text-lg mb-2">C. Stage 2: Hybrid Worker Layer</h3>
+              <p className="text-slate-700 mb-2">
+                The system executes a parallelized extraction phase based on the Director's assignments:
+              </p>
+              <div className="ml-4 space-y-2">
+                <div>
+                  <span className="font-semibold text-slate-800">1. Gemini Workers (Geometric & Simple):</span>
+                  <p className="text-sm text-slate-600">
+                    For simple parts, a specialized Gemini Worker spawns. It uses a <strong>Self-Reflection Loop</strong> where it proposes an SVG primitive, composites it, and a separate "QA Persona" evaluates the fit, iterating until the verdict is "GOOD".
+                  </p>
+                </div>
+                <div>
+                  <span className="font-semibold text-slate-800">2. SAM3 Workers (Organic & Complex):</span>
+                  <p className="text-sm text-slate-600">
+                    For complex parts, the system calls the Segment Anything Model 3 (SAM3) via Fal.ai. It uses the Director's bounding box as a prompt to generate high-fidelity pixel masks, which are then vectorized.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="font-bold text-lg mb-2">D. Stage 3: The Architect (Kinematics)</h3>
               <p className="text-slate-700">
-                A deterministic packing algorithm (row, grid, or maxrects) calculates the optimal layout for a square texture atlas (1K/2K). 
-                The polygon masks are scaled and transformed to their target positions, creating a visual "blueprint" that preserves each part's shape for the generative phase.
+                Once all geometries are extracted, the <strong>Architect</strong> constructs the scene graph. It builds the parent-child hierarchy (e.g., Hand → Lower Arm → Upper Arm), identifies mechanical pivot points, and assigns movement types (ROTATION, SLIDING, FIXED, ELASTIC).
               </p>
             </div>
 
             <div>
-              <h3 className="font-bold text-lg mb-2">D. Generative Reconstruction (Image Synthesis)</h3>
+              <h3 className="font-bold text-lg mb-2">E. Stage 4 & 5: Atlas & Reconstruction</h3>
               <p className="text-slate-700">
-                A dual-input prompt strategy is employed. We feed the generative model:
-                <br/>1) The original reference image with annotated polygon masks.
-                <br/>2) The atlas layout template with scaled polygon outlines.
-                <br/>
-                The model is instructed to extract and generate pixel data for each part within its polygon boundary. Crucially, it must reconstruct areas that were occluded in the original image (e.g., the top of a tire hidden by a fender) to ensure clean rotation during animation.
+                A deterministic packing algorithm (MaxRects) organizes parts into a texture atlas.
+                Finally, a dual-input generative process (using Gemini or Flux) fills in the texture data for each part, crucially reconstructing areas that were occluded in the original image.
               </p>
             </div>
           </div>
         </section>
 
         <section>
-            <h2 className="text-xl font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
-                <Layers className="w-5 h-5" /> II. Architecture
-            </h2>
-            <div className="bg-slate-100 p-6 rounded-lg text-sm font-mono text-slate-700">
-                [Input Image] <br/>
-                &nbsp;&nbsp;⬇<br/>
-                [Normalize] - (Fit to 1024×1024 white canvas)<br/>
-                &nbsp;&nbsp;⬇<br/>
-                [Vision Model] - (JSON: Polygon Masks, Pivots & Hierarchy)<br/>
-                &nbsp;&nbsp;⬇<br/>
-                [Canvas Engine] - (Atlas Template with Scaled Polygons)<br/>
-                &nbsp;&nbsp;⬇<br/>
-                [Image Gen Model] - (Prompt: "Ref[polygon] → Target[polygon]")<br/>
-                &nbsp;&nbsp;⬇<br/>
-                [Output Sprite Sheet] + [Animation Rig]
-            </div>
+          <h2 className="text-xl font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Layers className="w-5 h-5" /> II. Architecture
+          </h2>
+          <div className="bg-slate-100 p-6 rounded-lg text-sm font-mono text-slate-700 whitespace-pre-wrap">
+            {`User Upload 
+   ⬇
+Image Normalization (1K)
+   ⬇
+[Stage 1: Director] (Gemini 3 Flash)
+   ⬇
+Decision: { Segmentation Strategy }
+  ├─ Simple/Geo ──➡ [Gemini Worker] ⟳ QA Loop 
+  └─ Complex ───➡ [SAM3 Worker] (Fal.ai)
+        ⬇                 ⬇
+    [Geometry Merger]
+        ⬇
+[Stage 3: Architect] (Hierarchy & Pivots)
+        ⬇
+[Stage 4: Atlas Packing]
+        ⬇
+[Stage 5: Gen Reconstruction] (In-painting)
+        ⬇
+Output: Final Sprite Sheet + Rig JSON`}
+          </div>
         </section>
 
         <section>
@@ -189,9 +211,9 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
             <GitFork className="w-5 h-5" /> III. Future Work
           </h2>
           <p className="text-slate-700">
-            Current limitations include complex skeletal chain inference and multi-view consistency. 
-            Future iterations will explore larger reasoning models for improved polygon accuracy, depth-map estimation for automated Z-indexing (layer ordering), 
-            and support for higher-vertex polygon masks to capture more complex part geometries.
+            Current limitations include complex skeletal chain inference and multi-view consistency.
+            Future iterations will explore larger reasoning models for improved polygon accuracy, depth-map estimation for automated Z-indexing (layer ordering),
+            and multi-view generation (side/back views) from single frontal inputs.
           </p>
         </section>
 
@@ -204,7 +226,7 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
               <p className="text-sm text-slate-600 mb-4 text-center italic">
                 Real-time visualization of pipeline artifacts from the current session.
               </p>
-              
+
               {/* Export buttons */}
               <div className="flex justify-center gap-3 mb-6 print:hidden">
                 <button
@@ -222,21 +244,21 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
                   Export Whitepaper as PDF
                 </button>
               </div>
-              
+
               <div ref={pipelineRef} className="flex flex-col items-center gap-2 bg-slate-50 p-4 rounded-lg">
                 {/* Step 1: Input */}
-                <PipelineNode 
-                  label="1. Source Input" 
+                <PipelineNode
+                  label="1. Source Input"
                   description="Normalized 1024×1024"
                   image={pipelineState?.originalImage}
                   isComplete={!!pipelineState?.originalImage}
                 />
-                
+
                 <PipelineArrow active={!!pipelineState?.originalImage} />
-                
+
                 {/* Step 2: Analysis */}
-                <PipelineNode 
-                  label="2. Semantic Analysis" 
+                <PipelineNode
+                  label="2. Semantic Analysis"
                   description={pipelineState?.analysisResults ? `${pipelineState.analysisResults.length} parts detected` : 'Awaiting analysis'}
                   image={pipelineState?.annotatedOriginalImage}
                   isComplete={!!pipelineState?.analysisResults}
@@ -246,33 +268,32 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
                     </div>
                   ) : undefined}
                 />
-                
+
                 <PipelineArrow active={!!pipelineState?.annotatedOriginalImage} />
-                
+
                 {/* Step 3: Atlas Layout */}
-                <PipelineNode 
-                  label="3. Atlas Template" 
+                <PipelineNode
+                  label="3. Atlas Template"
                   description="Optimized packing layout"
                   image={pipelineState?.preparedAtlasImage}
                   isComplete={!!pipelineState?.preparedAtlasImage}
                 />
-                
+
                 <PipelineArrow active={!!pipelineState?.preparedAtlasImage} />
-                
+
                 {/* Step 4: Generated Output */}
-                <PipelineNode 
-                  label="4. Generated Atlas" 
+                <PipelineNode
+                  label="4. Generated Atlas"
                   description="Reconstructed sprite sheet"
                   image={pipelineState?.generatedAtlasImage}
                   isComplete={!!pipelineState?.generatedAtlasImage}
                 />
-                
+
                 <PipelineArrow active={!!pipelineState?.generatedAtlasImage} />
-                
+
                 {/* Step 5: Kinematic Validation */}
-                <div className={`w-full max-w-md border rounded-lg overflow-hidden transition-all ${
-                  pipelineState?.isValidated ? 'border-emerald-400 bg-white shadow-md' : 'border-slate-200 bg-slate-50'
-                }`}>
+                <div className={`w-full max-w-md border rounded-lg overflow-hidden transition-all ${pipelineState?.isValidated ? 'border-emerald-400 bg-white shadow-md' : 'border-slate-200 bg-slate-50'
+                  }`}>
                   <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50">
                     {pipelineState?.isValidated ? (
                       <CheckCircle className="w-4 h-4 text-emerald-500" />
@@ -304,7 +325,7 @@ export const Whitepaper: React.FC<Props> = ({ pipelineState }) => {
         </section>
 
         <div className="border-t border-slate-200 pt-8 mt-8 text-center text-xs text-slate-500">
-            Neural Sprite Pipeline Research Prototype • React + GenAI SDK
+          Neural Sprite Pipeline Research Prototype • React + GenAI SDK
         </div>
       </div>
     </div>

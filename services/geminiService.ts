@@ -9,7 +9,9 @@ import {
   PartTypeHint,
   PipelineDebugData,
   PipelineStage,
-  WorkerError
+  WorkerError,
+  WorkerEvent,
+  WorkerHistory
 } from '../types';
 import { createGeometryComposite } from "../utils/canvasUtils";
 
@@ -39,7 +41,8 @@ let debugData: PipelineDebugData = {
   workerOutputs: [],
   workerErrors: [],
   architectOutput: null,
-  apiLogs: []
+  apiLogs: [],
+  workerHistory: []
 };
 
 const addApiLog = (stage: PipelineStage, prompt: string, output: string, duration: number) => {
@@ -183,9 +186,12 @@ Rules:
 For each Rigid Body, provide:
 1. id: Unique snake_case identifier
 2. name: Human-readable name
-3. visual_anchor: [x, y] (0-1 relative) INSIDE the part
+3. visual_anchor: [x, y] (0-1 relative) INSIDE the part , if the part is a wheel, the visual anchor should be the center of the wheel
 4. bbox: [min_x, min_y, max_x, max_y] (0-1 relative) Rough bounding box
 5. type_hint: [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
+6. segmentation_strategy: 'gemini' OR 'sam3'
+   - Choose 'gemini' for: Simple geometric parts (wheels, straight pistons, boxy joints).
+   - Choose 'sam3' for: Complex organic shapes (limbs, hair, clothing, irregular bodies).
 `;
 
   const prompt = `${baseTask}\n${feedbackContext}\n${outputFormat}`;
@@ -210,9 +216,14 @@ For each Rigid Body, provide:
         type_hint: {
           type: Type.STRING,
           enum: ["WHEEL", "LIMB", "BODY", "PISTON", "JOINT", "DECORATION", "OTHER"]
+        },
+        segmentation_strategy: {
+          type: Type.STRING,
+          enum: ["gemini", "sam3"],
+          description: "Use 'gemini' for simple shapes (circle, rect). Use 'sam3' for complex/irregular organic shapes."
         }
       },
-      required: ["id", "name", "visual_anchor", "bbox", "type_hint"]
+      required: ["id", "name", "visual_anchor", "bbox", "type_hint", "segmentation_strategy"]
     }
   };
 
@@ -341,6 +352,23 @@ Task:
     confidence: resultRaw.confidence
   };
 
+  // Log Initial Event
+  const initialEvent: WorkerEvent = {
+    timestamp: Date.now(),
+    turn: 0,
+    type: 'generation',
+    prompt: prompt,
+    shape: geometry.shape
+  };
+
+  // Update history
+  let history = debugData.workerHistory.find(h => h.manifestId === manifest.id);
+  if (!history) {
+    history = { manifestId: manifest.id, events: [] };
+    debugData.workerHistory.push(history);
+  }
+  history.events.push(initialEvent);
+
   // --- Step 2: Self-Reflection Loop ---
   // Only enter loop if not explicitly requested to skip (could add that option later)
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
@@ -381,6 +409,17 @@ If 'IMPROVE', provide specific feedback on how to fix it (e.g., "shrink width", 
       evalSchema
     );
 
+    // Log Evaluation Event
+    history.events.push({
+      timestamp: Date.now(),
+      turn,
+      type: 'evaluation',
+      prompt: evalPrompt,
+      feedback: evalResult.feedback,
+      verdict: evalResult.verdict as 'GOOD' | 'IMPROVE',
+      compositeImageBase64: compositeBase64
+    });
+
     if (evalResult.verdict === 'GOOD') {
       addApiLog('workers', `Self-Eval Turn ${turn}`, `Verdict: GOOD. Stopping.`, 0);
       break;
@@ -418,6 +457,15 @@ Previous Shape: ${geometry.shape.type}
       amodal_completed: resultRaw.amodal_completed,
       confidence: resultRaw.confidence
     };
+
+    // Log Refinement Event
+    history.events.push({
+      timestamp: Date.now(),
+      turn,
+      type: 'generation',
+      prompt: refinePrompt,
+      shape: geometry.shape
+    });
   }
 
   // Update debug data
@@ -566,7 +614,8 @@ export const runDirectorOnly = async (
     workerOutputs: [],
     workerErrors: [],
     architectOutput: null,
-    apiLogs: []
+    apiLogs: [],
+    workerHistory: []
   };
 
   onStage?.('director', 'Discovering parts...');

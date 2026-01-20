@@ -215,13 +215,9 @@ const drawNormalizedPrimitive = (
       ctx.translate(tx, ty);
       ctx.scale(sx, sy);
 
-      // Counter-scale line width so it doesn't look huge
-      const finalScale = Math.max(sx, sy);
-      ctx.lineWidth = ctx.lineWidth / finalScale;
-
       try {
         const p = new Path2D(shape.d);
-        ctx.stroke(p);
+        ctx.fill(p);
       } catch (e) {
         console.warn("Failed to draw path in atlas", e);
       }
@@ -229,136 +225,76 @@ const drawNormalizedPrimitive = (
       return;
     }
   }
-  ctx.stroke();
+  ctx.fill();
 };
 
-const packRow = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
+import potpack from "potpack";
+
+const packWithPotpack = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
+  // 1. Initial scale estimate
   const totalArea = partsWithSize.reduce((sum, p) => sum + p.srcW * p.srcH, 0);
+  // use slightly smaller area to be safe
   const availableArea = (resolution - BOX_PADDING * 2) ** 2;
-  const scale = Math.sqrt(availableArea / totalArea) * 0.85;
+  let scale = Math.sqrt(availableArea / totalArea) * 0.90;
 
-  let curX = BOX_PADDING;
-  let curY = BOX_PADDING;
-  let rowHeight = 0;
+  // Retry loop stats
+  let finalScale = scale;
+  let success = false;
 
-  partsWithSize.forEach((p) => {
-    const destW = p.srcW * scale;
-    const destH = p.srcH * scale;
+  // We'll try up to 10 times, reducing scale if it doesn't fit
+  for (let attempt = 0; attempt < 10; attempt++) {
+    // 2. Prepare items for potpack (with padding)
+    // potpack modifies items in-place, so we map to a temporary array
+    interface Box { w: number; h: number; index: number; x?: number; y?: number }
+    const boxes: Box[] = partsWithSize.map((p, i) => ({
+      w: Math.ceil(p.srcW * scale) + BOX_PADDING,
+      h: Math.ceil(p.srcH * scale) + BOX_PADDING,
+      index: i
+    }));
 
-    if (curX + destW + BOX_PADDING > resolution) {
-      curX = BOX_PADDING;
-      curY += rowHeight + BOX_PADDING;
-      rowHeight = 0;
+    // 3. Pack
+    const { w: packedW, h: packedH } = potpack(boxes);
+
+    // 4. Check if it fits
+    if (packedW <= resolution - BOX_PADDING && packedH <= resolution - BOX_PADDING) {
+      // Success! Apply back to parts
+      boxes.forEach(box => {
+        const p = partsWithSize[box.index];
+        // potpack guarantees x and y are set after packing
+        const b = box as Required<Box>;
+        p.part.atlasRect = {
+          x: Math.round(b.x + BOX_PADDING),
+          y: Math.round(b.y + BOX_PADDING),
+          w: Math.round(b.w - BOX_PADDING),
+          h: Math.round(b.h - BOX_PADDING)
+        };
+      });
+      finalScale = scale;
+      success = true;
+      break;
     }
 
-    p.part.atlasRect = {
-      x: Math.round(curX),
-      y: Math.round(curY),
-      w: Math.round(destW),
-      h: Math.round(destH),
-    };
+    // Fit failed, reduce scale
+    // Calculate how much we overflowed to make a smart guess, or just reduce by 10%
+    const maxDim = Math.max(packedW, packedH);
+    const target = resolution - BOX_PADDING;
+    // New scale factor based on overflow
+    const factor = target / maxDim;
+    scale *= (factor * 0.95); // go a bit lower to be safe
+  }
 
-    curX += destW + BOX_PADDING;
-    rowHeight = Math.max(rowHeight, destH);
-  });
+  if (!success) {
+    console.warn("Failed to pack atlas within 10 attempts, using last attempt results (likely clipped).");
+  }
 
   return partsWithSize;
 };
 
-const packGrid = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
-  const n = partsWithSize.length;
-  const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  const cellW = (resolution - BOX_PADDING * (cols + 1)) / cols;
-  const cellH = (resolution - BOX_PADDING * (rows + 1)) / rows;
+// Legacy stubs mapped to new packer
+const packRow = packWithPotpack;
+const packGrid = packWithPotpack;
+const packMaxRects = packWithPotpack;
 
-  partsWithSize.forEach((p, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const x = BOX_PADDING + col * (cellW + BOX_PADDING);
-    const y = BOX_PADDING + row * (cellH + BOX_PADDING);
-
-    const aspectRatio = p.srcW / p.srcH;
-    let destW: number, destH: number;
-    if (aspectRatio > cellW / cellH) {
-      destW = cellW;
-      destH = cellW / aspectRatio;
-    } else {
-      destH = cellH;
-      destW = cellH * aspectRatio;
-    }
-
-    const offsetX = (cellW - destW) / 2;
-    const offsetY = (cellH - destH) / 2;
-
-    p.part.atlasRect = {
-      x: Math.round(x + offsetX),
-      y: Math.round(y + offsetY),
-      w: Math.round(destW),
-      h: Math.round(destH),
-    };
-  });
-
-  return partsWithSize;
-};
-
-const packMaxRects = (partsWithSize: PartWithSize[], resolution: number): PartWithSize[] => {
-  const totalArea = partsWithSize.reduce((sum, p) => sum + p.srcW * p.srcH, 0);
-  const availableArea = (resolution - BOX_PADDING * 2) ** 2;
-  const scale = Math.sqrt(availableArea / totalArea) * 0.9;
-
-  const sorted = [...partsWithSize].sort((a, b) => b.srcH * scale - a.srcH * scale);
-
-  interface FreeRect { x: number; y: number; w: number; h: number; }
-  const freeRects: FreeRect[] = [{
-    x: BOX_PADDING,
-    y: BOX_PADDING,
-    w: resolution - BOX_PADDING * 2,
-    h: resolution - BOX_PADDING * 2,
-  }];
-
-  sorted.forEach((p) => {
-    const destW = p.srcW * scale;
-    const destH = p.srcH * scale;
-
-    let bestIdx = -1;
-    let bestScore = Infinity;
-    for (let i = 0; i < freeRects.length; i++) {
-      const r = freeRects[i];
-      if (destW + BOX_PADDING <= r.w && destH + BOX_PADDING <= r.h) {
-        const score = r.y + destH;
-        if (score < bestScore) {
-          bestScore = score;
-          bestIdx = i;
-        }
-      }
-    }
-
-    if (bestIdx >= 0) {
-      const r = freeRects[bestIdx];
-      p.part.atlasRect = {
-        x: Math.round(r.x),
-        y: Math.round(r.y),
-        w: Math.round(destW),
-        h: Math.round(destH),
-      };
-
-      freeRects.splice(bestIdx, 1);
-      const rightW = r.w - destW - BOX_PADDING;
-      const bottomH = r.h - destH - BOX_PADDING;
-      if (rightW > 20) {
-        freeRects.push({ x: r.x + destW + BOX_PADDING, y: r.y, w: rightW, h: destH });
-      }
-      if (bottomH > 20) {
-        freeRects.push({ x: r.x, y: r.y + destH + BOX_PADDING, w: r.w, h: bottomH });
-      }
-    } else {
-      p.part.atlasRect = { x: BOX_PADDING, y: BOX_PADDING, w: Math.round(destW), h: Math.round(destH) };
-    }
-  });
-
-  return partsWithSize;
-};
 
 const drawAtlas = (
   ctx: CanvasRenderingContext2D,
@@ -381,11 +317,17 @@ const drawAtlas = (
     ctx.setLineDash([]);
 
     // Draw Vector Shape (Normalized to slot)
-    ctx.strokeStyle = "#000000";
-    ctx.lineWidth = 2;
+    //ctx.strokeStyle = "#000000";
+    ctx.fillStyle = "#000000";
+    //ctx.fill();
+    //ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.6;
+    ctx.filter = "blur(15px)";
     // We pass the ORIGINAL part bbox (which the shape is relative to)
     // p.part.bbox was clamped in calculatePartSizes, we use that.
     drawNormalizedPrimitive(ctx, p.part.shape, p.part.bbox, rect);
+    ctx.filter = "none";
+    ctx.globalAlpha = 1;
 
     // Draw Number Label
     const fontSize = Math.min(rect.w, rect.h) * 0.4; // Large number
