@@ -8,6 +8,7 @@ interface Props {
   parts: GamePart[];
   onConfirm: () => void;
   onRetry: () => void;
+  compact?: boolean;
 }
 
 // Clamp relative values to 0-1 range
@@ -99,7 +100,7 @@ const buildClipPath2D = (shape: SVGPrimitive, imgSize: number): Path2D => {
   return path;
 };
 
-export const RigPreview: React.FC<Props> = ({ originalImageBase64, parts, onConfirm, onRetry }) => {
+export const RigPreview: React.FC<Props> = ({ originalImageBase64, parts, onConfirm, onRetry, compact }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
   const [originalImg, setOriginalImg] = useState<HTMLImageElement | null>(null);

@@ -6,6 +6,7 @@ interface Props {
   parts: GamePart[];
   onConfirm: () => void;
   onRetry: () => void;
+  compact?: boolean;
 }
 
 interface TreeNode {
@@ -96,7 +97,7 @@ const HierarchyTree: React.FC<{ parts: GamePart[] }> = ({ parts }) => {
   );
 };
 
-export const AnalysisViewer: React.FC<Props> = ({ parts, onConfirm, onRetry }) => {
+export const AnalysisViewer: React.FC<Props> = ({ parts, onConfirm, onRetry, compact }) => {
   return (
     <div className="space-y-4">
       {/* Hierarchy Tree Diagram */}

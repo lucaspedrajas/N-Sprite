@@ -5,6 +5,7 @@ import { CheckCircle, XCircle, AlertTriangle, GitBranch, RotateCcw, ArrowLeftRig
 interface Props {
   parts: GamePart[];
   onValidationComplete?: (isValid: boolean, issues: ValidationIssue[]) => void;
+  compact?: boolean;
 }
 
 interface ValidationIssue {
@@ -33,7 +34,7 @@ const MOVEMENT_COLORS: Record<MovementType, string> = {
   ELASTIC: 'text-purple-400',
 };
 
-export const KinematicValidator: React.FC<Props> = ({ parts, onValidationComplete }) => {
+export const KinematicValidator: React.FC<Props> = ({ parts, onValidationComplete, compact }) => {
   const validation = useMemo(() => {
     const issues: ValidationIssue[] = [];
     const partsById = new Map(parts.map(p => [p.id, p]));

@@ -399,6 +399,90 @@ Output the complete GamePart array with all fields.
 // Orchestrator - Full Pipeline
 // ============================================
 
+// Run only the Director stage - returns manifests, user must confirm before workers
+export const runDirectorOnly = async (
+  imageBase64: string,
+  onStream?: StreamCallback,
+  onDebug?: DebugCallback
+): Promise<PartManifest[]> => {
+  // Reset debug data for new run
+  debugData = {
+    directorOutput: null,
+    workerOutputs: [],
+    workerErrors: [],
+    architectOutput: null,
+    apiLogs: []
+  };
+  
+  const manifests = await runDirector(imageBase64, onStream, onDebug);
+  return manifests;
+};
+
+// Run only the Workers stage - requires manifests from Director
+export const runWorkersOnly = async (
+  imageBase64: string,
+  onDebug?: DebugCallback
+): Promise<WorkerGeometry[]> => {
+  const manifests = debugData.directorOutput;
+  if (!manifests || manifests.length === 0) {
+    throw new Error('No director output found. Run Director first.');
+  }
+  
+  // Clear previous worker data
+  debugData.workerOutputs = [];
+  debugData.workerErrors = [];
+  
+  const workerResults = await Promise.allSettled(
+    manifests.map(m => runWorker(imageBase64, m, onDebug))
+  );
+  
+  const geometries: WorkerGeometry[] = [];
+  const errors: WorkerError[] = [];
+  
+  workerResults.forEach((result, index) => {
+    const manifest = manifests[index];
+    if (result.status === 'fulfilled') {
+      geometries.push(result.value);
+    } else {
+      const errorMsg = result.reason instanceof Error 
+        ? result.reason.message 
+        : String(result.reason);
+      errors.push({
+        manifestId: manifest.id,
+        manifestName: manifest.name,
+        error: errorMsg,
+        retryCount: 0
+      });
+    }
+  });
+  
+  debugData.workerErrors = errors;
+  onDebug?.({ ...debugData });
+  
+  return geometries;
+};
+
+// Run only the Architect stage - requires manifests and geometries
+export const runArchitectOnly = async (
+  imageBase64: string,
+  onStream?: StreamCallback,
+  onDebug?: DebugCallback
+): Promise<GamePart[]> => {
+  const manifests = debugData.directorOutput;
+  const geometries = debugData.workerOutputs;
+  
+  if (!manifests || manifests.length === 0) {
+    throw new Error('No director output found. Run Director first.');
+  }
+  if (!geometries || geometries.length === 0) {
+    throw new Error('No worker outputs found. Run Workers first.');
+  }
+  
+  const parts = await runArchitect(imageBase64, manifests, geometries, onStream, onDebug);
+  return parts;
+};
+
+// Full pipeline - runs all 3 stages automatically (legacy behavior)
 export const analyzeImageParts = async (
   imageBase64: string,
   onStream?: StreamCallback,
