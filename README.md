@@ -8,8 +8,8 @@ Using a **Sequential Multi-Persona Workflow**, it combines the reasoning power o
 
 <table>
   <tr>
-    <td><video src="https://github.com/user-attachments/assets/224016b1-b177-4772-af4d-7293befe191c" width="100%"></video></td>
-    <td><video src="https://github.com/user-attachments/assets/9ad52e9c-e117-4fc1-a700-382baf4831bf" width="100%"></video></td>
+    <td><video src="https://github.com/user-attachments/assets/7fbc0d76-2148-4781-a1b4-9114787ca784" width="100%"></video></td>
+    <td><video src="https://github.com/user-attachments/assets/725b0ad3-bd29-4280-8f39-c1d444a489c2" width="100%"></video></td>
   </tr>
 </table>
 
@@ -31,7 +31,7 @@ Using a **Sequential Multi-Persona Workflow**, it combines the reasoning power o
 - **AI Services**:
   - **Reasoning**: `gemini-3-flash-preview` (Google)
   - **Segmentation**: `sam3` (Fal.ai)
-  - **In-Painting**: `gemini-1.5-pro` or `flux-dev` (Fal.ai)
+  - **ImageGeneration**: `nanobanana 2 pro` or `flux-2` (Fal.ai)
 
 ## 📋 How It Works
 
