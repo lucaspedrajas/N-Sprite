@@ -65,6 +65,7 @@ export interface PartManifest {
   id: string;
   name: string;
   visual_anchor: [number, number];  // [x, y] relative 0-1, point inside the part
+  bbox: BBox; // Estimated bounding box [min_x, min_y, max_x, max_y] relative 0-1
   type_hint: PartTypeHint;
 }
 

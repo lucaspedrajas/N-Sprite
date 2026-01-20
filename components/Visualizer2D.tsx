@@ -111,131 +111,7 @@ export const Visualizer2D: React.FC<VisualizerProps> = ({
 
     const imgSize = image.width; // Assuming square for base
 
-    // Recursive Part Renderer
-    const PartNode = ({ node }: { node: TreeNode }) => {
-        const { part, children } = node;
 
-        // Calculate Animation Transform
-        const anim = useMemo(() => {
-            let rotation = 0; // Degrees
-            let x = 0;
-            let y = 0;
-            let scale = 1;
-
-            if (mode === 'rig') {
-                switch (part.movementType) {
-                    case MovementType.ROTATION:
-                        rotation = Math.sin(time * 3) * 15; // +/- 15 deg
-                        break;
-                    case MovementType.SLIDING:
-                        x = Math.sin(time * 4) * 15;
-                        y = Math.sin(time * 4 + 0.5) * 8;
-                        break;
-                    case MovementType.ELASTIC:
-                        scale = 1 + Math.sin(time * 5) * 0.05;
-                        break;
-                }
-            }
-            return { rotation, x, y, scale };
-        }, [part.movementType, time, mode]);
-
-        // Calculate Static Geometry
-        const geom = useMemo(() => {
-            const bounds = bboxToRect(clampBbox(part.bbox), imgSize);
-            const pivotPx = {
-                x: clampRel(part.pivot.x) * imgSize,
-                y: clampRel(part.pivot.y) * imgSize
-            };
-            return { bounds, pivotPx };
-        }, [part, imgSize]);
-
-        return (
-            <React.Fragment>
-                <PartNodeContent
-                    node={node}
-                    anim={anim}
-                    geom={geom}
-                    parentPivotPx={node.part.parentId ? null : { x: imgSize / 2, y: imgSize / 2 }} // Root pivot relative to center?
-                />
-            </React.Fragment>
-        );
-    };
-
-    // Helper to handle the recursion with parent context
-    const PartNodeContent = ({ node, anim, geom, parentPivotPx }: any) => {
-        const myPivot = geom.pivotPx;
-
-        // Define position
-        let x, y;
-        if (parentPivotPx) {
-            // Child
-            x = myPivot.x - parentPivotPx.x;
-            y = myPivot.y - parentPivotPx.y;
-        } else {
-            // Root (simulate parent at image center)
-            const center = imgSize / 2;
-            x = myPivot.x - center;
-            y = myPivot.y - center;
-        }
-
-        return (
-            <Group
-                x={x + (mode === 'rig' ? anim.x : 0)}
-                y={y + (mode === 'rig' ? anim.y : 0)}
-                rotation={mode === 'rig' ? anim.rotation : 0}
-                scaleX={mode === 'rig' ? anim.scale : 1}
-                scaleY={mode === 'rig' ? anim.scale : 1}
-            >
-                {/* Visual Content Group */}
-                <Group
-                    clipFunc={mode === 'rig' ? (ctx: any) => {
-                        ctx.translate(-myPivot.x, -myPivot.y);
-                        applyClipPath(ctx, node.part.shape, imgSize);
-                        ctx.translate(myPivot.x, myPivot.y);
-                    } : undefined}
-                >
-                    {mode === 'rig' && (
-                        <KonvaImage
-                            image={image}
-                            x={-myPivot.x} // Draw full image at origin offset
-                            y={-myPivot.y}
-                            width={imgSize}
-                            height={imgSize}
-                        />
-                    )}
-
-                    {mode === 'atlas' && node.part.atlasRect && (
-                        <KonvaImage
-                            image={image}
-                            crop={{
-                                x: node.part.atlasRect.x,
-                                y: node.part.atlasRect.y,
-                                width: node.part.atlasRect.w,
-                                height: node.part.atlasRect.h
-                            }}
-                            x={geom.bounds.x - myPivot.x}
-                            y={geom.bounds.y - myPivot.y}
-                            width={node.part.atlasRect.w}
-                            height={node.part.atlasRect.h}
-                        />
-                    )}
-                </Group>
-
-                {/* Wireframe Overlay */}
-                {(showWireframe || showBBoxes) && (
-                    <Group>
-                        <Circle radius={3} fill="#ef4444" />
-                        {showBBoxes && <KonvaRect x={geom.bounds.x - geom.pivotPx.x} y={geom.bounds.y - geom.pivotPx.y} width={geom.bounds.w} height={geom.bounds.h} stroke="cyan" strokeWidth={1} />}
-                    </Group>
-                )}
-
-                {/* Children */}
-                {node.children.map((child: TreeNode) => (
-                    <RecursivePart key={child.part.id} node={child} parentPivotPx={geom.pivotPx} />
-                ))}
-            </Group>
-        );
-    };
 
     // Component to render the actual vector shape outline
     const VectorShape = ({ part, width, height }: { part: GamePart, width: number, height: number }) => {
@@ -287,7 +163,7 @@ export const Visualizer2D: React.FC<VisualizerProps> = ({
         const { part } = node;
         const anim = useMemo(() => {
             let rotation = 0, x = 0, y = 0, scale = 1;
-            if (isPlaying && mode === 'rig') {
+            if (isPlaying && (mode === 'rig' || mode === 'atlas')) {
                 switch (part.movementType) {
                     case MovementType.ROTATION:
                         rotation = Math.sin(time * 3) * 15;
@@ -362,8 +238,8 @@ export const Visualizer2D: React.FC<VisualizerProps> = ({
                                 }}
                                 x={geom.bounds.x - geom.pivotPx.x}
                                 y={geom.bounds.y - geom.pivotPx.y}
-                                width={node.part.atlasRect.w}
-                                height={node.part.atlasRect.h}
+                                width={geom.bounds.w}
+                                height={geom.bounds.h}
                             />
                         )
                     )}

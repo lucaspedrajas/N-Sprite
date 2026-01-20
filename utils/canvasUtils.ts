@@ -540,3 +540,45 @@ export const removeBackgroundColor = async (
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL("image/png").split(",")[1];
 };
+
+export const createGeometryComposite = async (
+  originalImageBase64: string,
+  geometry: SVGPrimitive | null,
+  bbox: [number, number, number, number] | null = null
+): Promise<string> => {
+  const img = await loadImage(`data:image/png;base64,${originalImageBase64}`);
+  const w = img.width;
+  const h = img.height;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context not available");
+
+  // 1. Draw Original Image
+  ctx.drawImage(img, 0, 0);
+
+  // 2. Darken overlay (50% black)
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillRect(0, 0, w, h);
+
+  // 3. Draw Geometry (if available) - Neon Green
+  if (geometry) {
+    ctx.strokeStyle = "#00ff00"; // Neon Green
+    ctx.lineWidth = 3;
+    drawPrimitive(ctx, geometry, w);
+  }
+
+  // 4. Draw BBox (if available) - Cyan Dashed
+  if (bbox) {
+    const rect = bboxToRect(bbox, w);
+    ctx.strokeStyle = "#00ffff"; // Cyan
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.setLineDash([]);
+  }
+
+  return canvas.toDataURL("image/png").split(",")[1];
+};

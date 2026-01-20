@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, ArrowRight, Layers, Wand2, Image as ImageIcon, Palette, Monitor, BookOpen, FlaskConical, ChevronLeft, ChevronRight, Cpu, GitBranch, Grid, Sparkles, Scissors, Play, CheckCircle, RefreshCw, MessageSquare, RotateCcw, Terminal } from 'lucide-react';
 import { AppState, AtlasResolution, PipelineDebugData, APICallLog, PartManifest, WorkerGeometry, GamePart, StreamState } from './types';
-import { analyzeImageParts, runDirectorOnly, runWorkersOnly, runArchitectOnly, generateAssetArt as generateAssetArtGemini, StreamCallback, StageCallback, DebugCallback, retryWorker, retryDirector, retryArchitect, retryWorkerWithFeedback, RetryOptions, getDebugData } from './services/geminiService';
+import { runDirectorOnly, runWorkersOnly, runArchitectOnly, generateAssetArt as generateAssetArtGemini, StreamCallback, StageCallback, DebugCallback, retryWorker, retryDirector, retryArchitect, retryWorkerWithFeedback, RetryOptions, getDebugData } from './services/geminiService';
 import { generateAssetArt as generateAssetArtFal } from './services/falService';
 import { createAtlasPreparation, PackingAlgorithm, removeBackgroundColor, fitImageToSquare } from './utils/canvasUtils';
 import { AtlasViewer } from './components/AtlasViewer';
@@ -227,10 +227,13 @@ export default function App() {
         );
       }
 
+      // Remove background from the generated art
+      const bgRemoved = await removeBackgroundColor(generatedImageBase64);
+
       setState(prev => ({
         ...prev,
         isGenerating: false,
-        generatedAtlasImage: generatedImageBase64,
+        generatedAtlasImage: bgRemoved,
         activeStep: 6
       }));
     } catch (err) {

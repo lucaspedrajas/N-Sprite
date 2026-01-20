@@ -58,6 +58,20 @@ export const DirectorStep: React.FC<DirectorStepProps> = ({
                                         const color = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899'][i % 8];
                                         return (
                                             <g key={manifest.id}>
+                                                {/* Bounding Box */}
+                                                {manifest.bbox && (
+                                                    <rect
+                                                        x={manifest.bbox[0] * 256}
+                                                        y={manifest.bbox[1] * 256}
+                                                        width={(manifest.bbox[2] - manifest.bbox[0]) * 256}
+                                                        height={(manifest.bbox[3] - manifest.bbox[1]) * 256}
+                                                        fill="none"
+                                                        stroke={color}
+                                                        strokeWidth="1"
+                                                        strokeDasharray="4 2"
+                                                        opacity="0.6"
+                                                    />
+                                                )}
                                                 <circle cx={x} cy={y} r="8" fill={color} opacity="0.8" />
                                                 <circle cx={x} cy={y} r="4" fill="white" />
                                                 <line x1={x - 12} y1={y} x2={x + 12} y2={y} stroke={color} strokeWidth="2" />

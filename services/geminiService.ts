@@ -1,4 +1,3 @@
-
 // Multi-Agent Architecture for Kinematic Decomposition
 import { GoogleGenAI, Type } from "@google/genai";
 import {
@@ -8,11 +7,11 @@ import {
   SVGPrimitive,
   MovementType,
   PartTypeHint,
-  APICallLog,
   PipelineDebugData,
   PipelineStage,
   WorkerError
 } from '../types';
+import { createGeometryComposite } from "../utils/canvasUtils";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -23,7 +22,6 @@ const getAiClient = () => {
 export type StreamCallback = (chunk: string, done: boolean) => void;
 export type StageCallback = (stage: string, message: string) => void;
 export type DebugCallback = (data: PipelineDebugData) => void;
-export type RetryWorkerCallback = (manifestId: string) => Promise<WorkerGeometry | null>;
 
 // Retry options for conversational mode
 export interface RetryOptions {
@@ -55,43 +53,144 @@ const addApiLog = (stage: PipelineStage, prompt: string, output: string, duratio
   });
 };
 
+/**
+ * Generic helper to call Gemini with standard patterns for this pipeline.
+ * Handles client init, logging, streaming, JSON parsing, and error wrapping.
+ */
+async function callGemini<T>(
+  stage: PipelineStage,
+  systemInstruction: string,
+  userContent: Array<string | { inlineData: { mimeType: string; data: string } } | { text: string }>,
+  schema: any,
+  options: {
+    onStream?: StreamCallback;
+    modelId?: string;
+  } = {}
+): Promise<T> {
+  const ai = getAiClient();
+  const modelId = options.modelId || "gemini-3-flash-preview";
+  const startTime = Date.now();
+
+  const formattedContents = userContent.map(c => {
+    if (typeof c === 'string') return { text: c };
+    return c;
+  });
+
+  // Prepend system instruction as the first text part if needed, 
+  // or just rely on the prompt structure. 
+  // For Gemini 1.5/2.0/3.0, system instructions can be separate or part of the prompt.
+  // We'll treat the first string in userContent or systemInstruction as part of the prompt flow.
+  // To keep it simple and match previous behavior: combine systemInstruction + user content.
+
+  const finalPromptText = `${systemInstruction}\n${formattedContents.filter(c => 'text' in c).map(c => (c as any).text).join('\n')}`;
+
+  // Clean up content for API call - ensure we don't send duplicate text if we just merged it for logging
+  // Actually, let's just send the array as is, but prepend system instruction text to the first text part or add a new one.
+  const apiContents = [
+    { text: systemInstruction },
+    ...formattedContents
+  ];
+
+  const responseSchema = {
+    type: Type.OBJECT, // Wrapper to ensure JSON is valid
+    properties: {
+      result: schema
+      // We wrap the actual schema in a "result" property or just return the schema directly?
+      // Google GenAI SDK schema handling can be strict.
+      // Previous code used direct schema. Let's stick to that.
+    }
+  };
+
+  // NOTE: Previous implementation didn't wrap in 'result', it passed Schema directly.
+  // We will pass the schema directly as `responseSchema`.
+
+  try {
+    const stream = await ai.models.generateContentStream({
+      model: modelId,
+      contents: {
+        parts: apiContents as any[]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        maxOutputTokens: 20000,
+      }
+    });
+
+    let fullText = "";
+    for await (const chunk of stream) {
+      if (chunk.text) {
+        fullText += chunk.text;
+        options.onStream?.(fullText, false);
+      }
+    }
+    options.onStream?.(fullText, true);
+
+    if (!fullText) throw new Error(`${stage}: No response`);
+
+    addApiLog(stage, finalPromptText, fullText, Date.now() - startTime);
+
+    return JSON.parse(fullText) as T;
+  } catch (err: any) {
+    // If stream fails, fallback to simple generate if needed, or just throw.
+    // Enhanced error logging
+    const duration = Date.now() - startTime;
+    addApiLog(stage, finalPromptText, `ERROR: ${err.message}`, duration);
+    throw err;
+  }
+}
+
 // ============================================
-// Stage 1: Director - Discovery & Grounding
+// Unified Stage 1: Director - Discovery & Grounding
 // ============================================
 
 const runDirector = async (
   imageBase64: string,
+  options: RetryOptions = { mode: 'fresh' },
   onStream?: StreamCallback,
   onDebug?: DebugCallback
 ): Promise<PartManifest[]> => {
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
+  const isConversational = options.mode === 'conversational';
 
-  const prompt = `
+  const baseTask = `
 Role: You are a Senior 2D Rigger specializing in kinematic mechanics.
-Task: Identify the main "Rigid Bodies" (kinematic groups) in this game asset.
+Task: ${isConversational ? 'Refine the breakdown' : 'Identify the main "Rigid Bodies"'} of this game asset.
 
-IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0) where 0.0 is top/left and 1.0 is bottom/right.
+IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0).
 
 Definition of a "Part":
 A part is a group of visual elements that moves as a single rigid unit.
-- If multiple objects move together (e.g., a rider and their saddle, or a wheel and its hubcap), they must be ONE part.
-- Ignore internal seams, bolts, or color changes unless they represent a mechanical joint.
-
-For each Rigid Body, provide:
-1. id: Unique snake_case identifier (e.g., "rear_wheel_assembly", "main_chassis")
-2. name: Human-readable display name
-3. visual_anchor: [x, y] - A point (0-1 relative) that falls INSIDE this specific part.
-4. type_hint: One of [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
-
-Rules:
-- Prioritize minimal, functional parts over detailed separation.
-- Ensure visual_anchor is clearly inside the main mass of the part.
-- Group static attachments (stickers, armor plates, handles) into their parent body.
+- If multiple objects move together (e.g., rider + saddle, wheel + hubcap), they must be ONE part.
+- Ignore internal seams/bolts unless they are mechanical joints.
 `;
 
-  const responseSchema = {
+  const feedbackContext = isConversational ? `
+Your previous analysis:
+${options.previousResult}
+
+${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'The previous breakdown had issues.'}
+
+CRITICAL INSTRUCTION: MERGE parts that move together.
+- Connect bolted/welded parts.
+- Keep decorations with their parent body.
+` : `
+Rules:
+- Prioritize minimal, functional parts.
+- Group static attachments into parent body.
+`;
+
+  const outputFormat = `
+For each Rigid Body, provide:
+1. id: Unique snake_case identifier
+2. name: Human-readable name
+3. visual_anchor: [x, y] (0-1 relative) INSIDE the part
+4. bbox: [min_x, min_y, max_x, max_y] (0-1 relative) Rough bounding box
+5. type_hint: [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
+`;
+
+  const prompt = `${baseTask}\n${feedbackContext}\n${outputFormat}`;
+
+  const schema = {
     type: Type.ARRAY,
     items: {
       type: Type.OBJECT,
@@ -103,82 +202,100 @@ Rules:
           items: { type: Type.NUMBER },
           description: "[x, y] relative coordinates 0-1"
         },
+        bbox: {
+          type: Type.ARRAY,
+          items: { type: Type.NUMBER },
+          description: "[min_x, min_y, max_x, max_y] relative coordinates 0-1"
+        },
         type_hint: {
           type: Type.STRING,
           enum: ["WHEEL", "LIMB", "BODY", "PISTON", "JOINT", "DECORATION", "OTHER"]
         }
       },
-      required: ["id", "name", "visual_anchor", "type_hint"]
+      required: ["id", "name", "visual_anchor", "bbox", "type_hint"]
     }
   };
 
-  const stream = await ai.models.generateContentStream({
-    model: modelId,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/png", data: imageBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
-  });
+  const result = await callGemini<PartManifest[]>(
+    'director',
+    prompt,
+    [{ inlineData: { mimeType: "image/png", data: imageBase64 } }],
+    schema,
+    { onStream }
+  );
 
-  let fullText = "";
-  for await (const chunk of stream) {
-    if (chunk.text) {
-      fullText += chunk.text;
-      onStream?.(fullText, false);
-    }
-  }
-  onStream?.(fullText, true);
-
-  if (!fullText) throw new Error("Director: No response");
-
-  addApiLog('director', prompt, fullText, Date.now() - startTime);
-  const result = JSON.parse(fullText) as PartManifest[];
   debugData.directorOutput = result;
-  onDebug?.({ ...debugData });
+  // If fresh run, plain reset. If retry, we might want to be careful, but architect usually needs fresh flows if director changes.
+  if (options.mode === 'fresh') {
+    debugData.workerOutputs = [];
+    debugData.workerErrors = [];
+    debugData.architectOutput = null;
+  } else {
+    // On director retry, we invalidate subsequent stages usually
+    debugData.workerOutputs = [];
+    debugData.workerErrors = [];
+    debugData.architectOutput = null;
+  }
 
+  onDebug?.({ ...debugData });
   return result;
 };
 
 // ============================================
-// Stage 2: Worker - Geometry Extraction (per part)
+// Unified Stage 2: Worker - Geometry Extraction
 // ============================================
 
 const runWorker = async (
   imageBase64: string,
   manifest: PartManifest,
+  options: RetryOptions = { mode: 'fresh' },
   onDebug?: DebugCallback
 ): Promise<WorkerGeometry> => {
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
+  const isConversational = options.mode === 'conversational';
+  const MAX_TURNS = 3;
 
-  const prompt = `
+  const basePrompt = `
 Role: You are a Geometry Worker reconstructing a single part.
-Focus Area: The part "${manifest.name}" (id: ${manifest.id}) located near relative coordinates [${manifest.visual_anchor.join(', ')}].
-Part Type: ${manifest.type_hint}
-
-IMPORTANT: All coordinates must be RELATIVE (0.0 to 1.0).
-
-Task:
-1. IGNORE occluding objects - imagine this part is isolated
-2. Fit an SVG primitive to this part's shape:
-   - circle: { type: "circle", cx, cy, r }
-   - rect: { type: "rect", x, y, width, height, rx? }
-   - ellipse: { type: "ellipse", cx, cy, rx, ry }
-   - path: { type: "path", d: "..." } - for complex shapes, use SVG path commands
-3. Provide the bounding box [min_x, min_y, max_x, max_y] (0-1 relative)
-4. Set amodal_completed: true if you reconstructed hidden/occluded parts
-5. Confidence score 0-1
-
-Prefer simple primitives (circle, rect, ellipse) when they fit well.
-Use path only for irregular shapes.
+Focus Area: "${manifest.name}" (id: ${manifest.id})
+Type: ${manifest.type_hint}
+Anchor: [${manifest.visual_anchor.join(', ')}]
+Expected Bounding Box: [${manifest.bbox?.join(', ') || 'unknown'}]
 `;
+
+  let prompt = basePrompt;
+  const userContent: any[] = [{ inlineData: { mimeType: "image/png", data: imageBase64 } }];
+
+  if (isConversational) {
+    if (options.compositedImage) {
+      userContent.push({ inlineData: { mimeType: "image/png", data: options.compositedImage } });
+      prompt += `\nThe SECOND image shows your previous shape (colored outline) overlaid on the original.\n`;
+    }
+
+    let prevInfo = "";
+    if (options.previousResult) {
+      try {
+        const prev = JSON.parse(options.previousResult);
+        prevInfo = `Previous Shape: ${prev.shape.type}, BBox: [${prev.bbox.join(',')}]`;
+      } catch {
+        prevInfo = `Previous raw: ${options.previousResult}`;
+      }
+    }
+
+    prompt += `
+Your previous extraction: ${prevInfo}
+${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'Improve the shape match based on the visual overlay.'}
+`;
+  } else {
+    prompt += `
+Task:
+1. IGNORE occluding objects.
+2. Fit an SVG primitive (circle, rect, ellipse, path).
+   - EXTREMELY IMPORTANT: For "path", you must trace the object contour PRECISELY.
+   - Do not simplify curves. Use as many points as needed.
+   - Do not hallucinate details, follow the pixels.
+3. Provide tight bounding box [min_x, min_y, max_x, max_y].
+`;
+  }
 
   const shapeSchema = {
     type: Type.OBJECT,
@@ -198,7 +315,7 @@ Use path only for irregular shapes.
     required: ["type"]
   };
 
-  const responseSchema = {
+  const schema = {
     type: Type.OBJECT,
     properties: {
       id: { type: Type.STRING },
@@ -214,105 +331,168 @@ Use path only for irregular shapes.
     required: ["id", "shape", "bbox", "amodal_completed", "confidence"]
   };
 
-  const response = await ai.models.generateContent({
-    model: modelId,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/png", data: imageBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
-  });
-
-  const text = response.text;
-  if (!text) throw new Error(`Worker ${manifest.id}: No response`);
-
-  addApiLog('workers', prompt, text, Date.now() - startTime);
-  const result = JSON.parse(text);
-  // Normalize shape to proper SVGPrimitive type
-  const geometry: WorkerGeometry = {
+  // --- Step 1: Initial Generation ---
+  let resultRaw = await callGemini<any>('workers', prompt, userContent, schema);
+  let geometry: WorkerGeometry = {
     id: manifest.id,
-    shape: normalizeShape(result.shape),
-    bbox: result.bbox,
-    amodal_completed: result.amodal_completed,
-    confidence: result.confidence
+    shape: normalizeShape(resultRaw.shape),
+    bbox: resultRaw.bbox,
+    amodal_completed: resultRaw.amodal_completed,
+    confidence: resultRaw.confidence
   };
 
-  debugData.workerOutputs.push(geometry);
-  onDebug?.({ ...debugData });
+  // --- Step 2: Self-Reflection Loop ---
+  // Only enter loop if not explicitly requested to skip (could add that option later)
+  for (let turn = 1; turn <= MAX_TURNS; turn++) {
+    // A. Generate Composite
+    const compositeBase64 = await createGeometryComposite(imageBase64, geometry.shape, geometry.bbox);
 
+    // B. Evaluate
+    const evalPrompt = `
+Role: You are a QA Specialist checking the geometry fit.
+Task: Evaluate if the GREEN outline matches the part "${manifest.name}" (Type: ${manifest.type_hint}) in the image.
+The CYAN dashed box is the bounding box.
+
+Criteria:
+1. Does the shape follow the visual contour?
+2. Is the bounding box tight?
+3. Are important features included?
+
+Respond with VERDICT: 'GOOD' or 'IMPROVE'.
+If 'IMPROVE', provide specific feedback on how to fix it (e.g., "shrink width", "move up", "trace the handle better").
+`;
+
+    const evalSchema = {
+      type: Type.OBJECT,
+      properties: {
+        verdict: { type: Type.STRING, enum: ["GOOD", "IMPROVE"] },
+        feedback: { type: Type.STRING }
+      },
+      required: ["verdict", "feedback"]
+    };
+
+    const evalResult = await callGemini<{ verdict: string; feedback: string }>(
+      'workers', // Log as worker stage
+      evalPrompt,
+      [
+        { inlineData: { mimeType: "image/png", data: imageBase64 } },
+        { inlineData: { mimeType: "image/png", data: compositeBase64 } }
+      ],
+      evalSchema
+    );
+
+    if (evalResult.verdict === 'GOOD') {
+      addApiLog('workers', `Self-Eval Turn ${turn}`, `Verdict: GOOD. Stopping.`, 0);
+      break;
+    }
+
+    addApiLog('workers', `Self-Eval Turn ${turn}`, `Verdict: IMPROVE. Feedback: ${evalResult.feedback}`, 0);
+
+    // C. Refine
+    const refinePrompt = `
+Role: Geometry Worker.
+Task: IMPROVE the shape based on QA feedback.
+
+Target: "${manifest.name}"
+QA Feedback: "${evalResult.feedback}"
+
+Previous Shape: ${geometry.shape.type}
+`;
+
+    // Re-run generation with feedback
+    // NOTE: We only send the original image and composite, context is in the prompt
+    resultRaw = await callGemini<any>(
+      'workers',
+      refinePrompt,
+      [
+        { inlineData: { mimeType: "image/png", data: imageBase64 } },
+        { inlineData: { mimeType: "image/png", data: compositeBase64 } }
+      ],
+      schema
+    );
+
+    geometry = {
+      id: manifest.id,
+      shape: normalizeShape(resultRaw.shape),
+      bbox: resultRaw.bbox,
+      amodal_completed: resultRaw.amodal_completed,
+      confidence: resultRaw.confidence
+    };
+  }
+
+  // Update debug data
+  if (isConversational) {
+    debugData.workerErrors = debugData.workerErrors.filter(e => e.manifestId !== manifest.id);
+  }
+
+  const idx = debugData.workerOutputs.findIndex(w => w.id === manifest.id);
+  if (idx >= 0) debugData.workerOutputs[idx] = geometry;
+  else debugData.workerOutputs.push(geometry);
+
+  onDebug?.({ ...debugData });
   return geometry;
 };
 
-// Normalize raw shape response to proper SVGPrimitive
 const normalizeShape = (raw: any): SVGPrimitive => {
   switch (raw.type) {
-    case 'circle':
-      return { type: 'circle', cx: raw.cx, cy: raw.cy, r: raw.r };
-    case 'rect':
-      return { type: 'rect', x: raw.x, y: raw.y, width: raw.width, height: raw.height, rx: raw.rx };
-    case 'ellipse':
-      return { type: 'ellipse', cx: raw.cx, cy: raw.cy, rx: raw.rx, ry: raw.ry };
-    case 'path':
-      return { type: 'path', d: raw.d };
-    default:
-      // Fallback to rect from bbox if type unknown
-      return { type: 'rect', x: 0, y: 0, width: 1, height: 1 };
+    case 'circle': return { type: 'circle', cx: raw.cx, cy: raw.cy, r: raw.r };
+    case 'rect': return { type: 'rect', x: raw.x, y: raw.y, width: raw.width, height: raw.height, rx: raw.rx };
+    case 'ellipse': return { type: 'ellipse', cx: raw.cx, cy: raw.cy, rx: raw.rx, ry: raw.ry };
+    case 'path': return { type: 'path', d: raw.d };
+    default: return { type: 'rect', x: 0, y: 0, width: 1, height: 1 };
   }
 };
 
 // ============================================
-// Stage 3: Architect - Hierarchy & Rigging
+// Unified Stage 3: Architect - Hierarchy & Rigging
 // ============================================
 
 const runArchitect = async (
   imageBase64: string,
   manifests: PartManifest[],
   geometries: WorkerGeometry[],
+  options: RetryOptions = { mode: 'fresh' },
   onStream?: StreamCallback,
   onDebug?: DebugCallback
 ): Promise<GamePart[]> => {
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
+  const isConversational = options.mode === 'conversational';
 
-  // Build geometry summary for architect
   const geoSummary = geometries.map(g => {
-    const m = manifests.find(m => m.id === g.id)!;
+    const m = manifests.find(m => m.id === g.id);
+    if (!m) return '';
     return `- ${m.name} (${g.id}): type=${g.shape.type}, bbox=[${g.bbox.join(',')}], type_hint=${m.type_hint}`;
   }).join('\n');
 
-  const prompt = `
-Role: You are the Rigging Architect - the lead engineer assembling the final rig.
-
-Parts with their extracted geometry (all coordinates are 0-1 relative):
+  const basePrompt = `
+Role: You are the Rigging Architect.
+Parts with extracted geometry (0-1 relative):
 ${geoSummary}
-
-Task:
-1. BUILD HIERARCHY: Assign parentId to each part
-   - Larger body parts are typically parents of smaller attached parts
-   - Use null for root parts (main body, chassis)
-   - Logic: Parts attach to overlapping or adjacent larger parts
-
-2. DEFINE PIVOTS: Assign pivot {x, y} (0-1 relative) for each part
-   - Wheels/circles: pivot at geometric center
-   - Limbs: pivot at joint/attachment point
-   - Look for bolts, joints, or connection points
-
-3. ASSIGN MOVEMENT: One of [ROTATION, SLIDING, FIXED, ELASTIC]
-   - ROTATION: Wheels, arms, rotating joints
-   - SLIDING: Pistons, sliding mechanisms
-   - FIXED: Decorations, static parts
-   - ELASTIC: Flexible/deformable parts
-
-Output the complete GamePart array with all fields.
 `;
 
-  const responseSchema = {
+  let instructions = "";
+  if (isConversational) {
+    instructions = `
+Your previous rigging:
+${options.previousResult}
+${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'Please re-analyze.'}
+
+Updated rigging instructions:
+1. BUILD HIERARCHY: Assign parentId (null for roots).
+2. DEFINE PIVOTS: {x, y} at joints.
+3. ASSIGN MOVEMENT: ROTATION, SLIDING, FIXED, ELASTIC.
+`;
+  } else {
+    instructions = `
+Task:
+1. BUILD HIERARCHY: Parent smaller parts to larger bodies. Null for root.
+2. DEFINE PIVOTS: Centers for wheels, joints for limbs.
+3. ASSIGN MOVEMENT: [ROTATION, SLIDING, FIXED, ELASTIC].
+`;
+  }
+
+  const prompt = `${basePrompt}\n${instructions}`;
+
+  const schema = {
     type: Type.ARRAY,
     items: {
       type: Type.OBJECT,
@@ -322,10 +502,7 @@ Output the complete GamePart array with all fields.
         parentId: { type: Type.STRING, nullable: true },
         pivot: {
           type: Type.OBJECT,
-          properties: {
-            x: { type: Type.NUMBER },
-            y: { type: Type.NUMBER }
-          },
+          properties: { x: { type: Type.NUMBER }, y: { type: Type.NUMBER } },
           required: ["x", "y"]
         },
         movementType: {
@@ -337,49 +514,24 @@ Output the complete GamePart array with all fields.
     }
   };
 
-  const stream = await ai.models.generateContentStream({
-    model: modelId,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/png", data: imageBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
-  });
-
-  let fullText = "";
-  for await (const chunk of stream) {
-    if (chunk.text) {
-      fullText += chunk.text;
-      onStream?.(fullText, false);
-    }
-  }
-  onStream?.(fullText, true);
-
-  if (!fullText) throw new Error("Architect: No response");
-
-  const rigging = JSON.parse(fullText) as Array<{
+  const rigging = await callGemini<Array<{
     id: string;
     name: string;
     parentId: string | null;
     pivot: { x: number; y: number };
     movementType: string;
-  }>;
+  }>>(
+    'architect',
+    prompt,
+    [{ inlineData: { mimeType: "image/png", data: imageBase64 } }],
+    schema,
+    { onStream }
+  );
 
-  addApiLog('architect', prompt, fullText, Date.now() - startTime);
-
-  // Merge geometry with rigging to create final GameParts
   const parts = rigging.map(rig => {
     const geo = geometries.find(g => g.id === rig.id);
     const manifest = manifests.find(m => m.id === rig.id);
-
-    if (!geo || !manifest) {
-      throw new Error(`Missing data for part ${rig.id}`);
-    }
+    if (!geo || !manifest) throw new Error(`Missing data for part ${rig.id}`);
 
     return {
       id: rig.id,
@@ -396,7 +548,6 @@ Output the complete GamePart array with all fields.
 
   debugData.architectOutput = parts;
   onDebug?.({ ...debugData });
-
   return parts;
 };
 
@@ -404,14 +555,12 @@ Output the complete GamePart array with all fields.
 // Orchestrator - Full Pipeline
 // ============================================
 
-// Run only the Director stage - returns full debug data
 export const runDirectorOnly = async (
   imageBase64: string,
   onStream?: StreamCallback,
   onStage?: StageCallback,
   onDebug?: DebugCallback
 ): Promise<PipelineDebugData> => {
-  // Reset debug data for new run
   debugData = {
     directorOutput: null,
     workerOutputs: [],
@@ -421,15 +570,10 @@ export const runDirectorOnly = async (
   };
 
   onStage?.('director', 'Discovering parts...');
-  const manifests = await runDirector(imageBase64, onStream, onDebug);
-
-  debugData.directorOutput = manifests;
-  onDebug?.({ ...debugData });
-
+  await runDirector(imageBase64, { mode: 'fresh' }, onStream, onDebug);
   return { ...debugData };
 };
 
-// Run only the Workers stage - requires manifests
 export const runWorkersOnly = async (
   imageBase64: string,
   manifests: PartManifest[],
@@ -438,21 +582,16 @@ export const runWorkersOnly = async (
   onDebug?: DebugCallback,
   existingDebugData?: PipelineDebugData
 ): Promise<PipelineDebugData> => {
-  // Restore context if provided
   if (existingDebugData) {
     debugData = { ...existingDebugData, directorOutput: manifests };
   } else {
     debugData.directorOutput = manifests;
   }
 
-  if (!debugData.directorOutput || debugData.directorOutput.length === 0) {
-    throw new Error('No director output found.');
-  }
-
   // Clear previous worker data
   debugData.workerOutputs = [];
   debugData.workerErrors = [];
-  onDebug?.({ ...debugData }); // Notify UI that we are starting from scratch (triggers skeletons)
+  onDebug?.({ ...debugData });
 
   const BATCH_SIZE = 8;
   const workerResults: PromiseSettledResult<WorkerGeometry>[] = [];
@@ -462,27 +601,20 @@ export const runWorkersOnly = async (
     const batchNum = Math.floor(i / BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(manifests.length / BATCH_SIZE);
 
-    onStage?.('workers', `Processing batch ${batchNum}/${totalBatches} (${i + 1}-${Math.min(i + chunk.length, manifests.length)} of ${manifests.length})...`);
+    onStage?.('workers', `Processing batch ${batchNum}/${totalBatches}...`);
 
     const batchResults = await Promise.allSettled(
-      chunk.map(m => runWorker(imageBase64, m, onDebug))
+      chunk.map(m => runWorker(imageBase64, m, { mode: 'fresh' }, onDebug))
     );
-
     workerResults.push(...batchResults);
   }
 
-  const geometries: WorkerGeometry[] = [];
-  const errors: WorkerError[] = [];
-
+  // Handle errors
   workerResults.forEach((result, index) => {
-    const manifest = manifests[index];
-    if (result.status === 'fulfilled') {
-      geometries.push(result.value);
-    } else {
-      const errorMsg = result.reason instanceof Error
-        ? result.reason.message
-        : String(result.reason);
-      errors.push({
+    if (result.status === 'rejected') {
+      const manifest = manifests[index];
+      const errorMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      debugData.workerErrors.push({
         manifestId: manifest.id,
         manifestName: manifest.name,
         error: errorMsg,
@@ -491,18 +623,10 @@ export const runWorkersOnly = async (
     }
   });
 
-  debugData.workerErrors = errors;
-  // workerOutputs are already pushed implicitly by runWorker, but let's ensure consistency
-  // runWorker pushes to global debugData.workerOutputs. 
-  // We should rely on that or reset it. 
-  // Ideally runWorker shouldn't touch global state if we are being pure, but for now we sync.
-
   onDebug?.({ ...debugData });
-
   return { ...debugData };
 };
 
-// Run only the Architect stage - requires manifests and geometries
 export const runArchitectOnly = async (
   imageBase64: string,
   workerOutputs: WorkerGeometry[],
@@ -516,346 +640,70 @@ export const runArchitectOnly = async (
   } else {
     debugData.workerOutputs = workerOutputs;
   }
-  // Clear previous architect output to ensure we show loading state
   debugData.architectOutput = null;
   onDebug?.({ ...debugData });
 
   const manifests = debugData.directorOutput;
-  const geometries = workerOutputs;
+  if (!manifests) throw new Error('No director output found');
 
-  if (!manifests || manifests.length === 0) {
-    throw new Error('No director output found. Run Director first.');
-  }
-  if (!geometries || geometries.length === 0) {
-    throw new Error('No worker outputs found. Run Workers first.');
-  }
-
-  onStage?.('architect', 'Building hierarchy and rigging...');
-  const parts = await runArchitect(imageBase64, manifests, geometries, onStream, onDebug);
-
-  debugData.architectOutput = parts;
-  onDebug?.({ ...debugData });
+  onStage?.('architect', 'Building hierarchy...');
+  await runArchitect(imageBase64, manifests, workerOutputs, { mode: 'fresh' }, onStream, onDebug);
 
   return { ...debugData };
 };
 
-
-
-// Retry a single failed worker
 export const retryWorker = async (
   imageBase64: string,
   manifestId: string,
   onDebug?: DebugCallback
 ): Promise<WorkerGeometry | null> => {
-  // Find the manifest in debug data
+  // This is a simple retry without feedback, internally uses fresh mode or we could map it.
+  // Preserving original signature for compatibility if UI calls this without feedback.
+  // But since we want unified, let's treat it as a fresh retry of that specific worker.
+
   const manifest = debugData.directorOutput?.find(m => m.id === manifestId);
-  if (!manifest) {
-    console.error(`Manifest ${manifestId} not found`);
-    return null;
-  }
+  if (!manifest) return null;
 
   try {
-    const geometry = await runWorker(imageBase64, manifest, onDebug);
-
-    // Update debug data - remove from errors, add to outputs
-    debugData.workerErrors = debugData.workerErrors.filter(e => e.manifestId !== manifestId);
-
-    // Check if already exists (shouldn't, but be safe)
-    const existingIdx = debugData.workerOutputs.findIndex(w => w.id === manifestId);
-    if (existingIdx >= 0) {
-      debugData.workerOutputs[existingIdx] = geometry;
-    } else {
-      debugData.workerOutputs.push(geometry);
-    }
-
-    onDebug?.({ ...debugData });
-    return geometry;
-  } catch (error) {
-    // Update retry count in errors
+    return await runWorker(imageBase64, manifest, { mode: 'fresh' }, onDebug);
+  } catch (e) {
+    // Error handling is inside runWorker for debugData updates? 
+    // No, runWorker updates outputs, but let's handle error logging here if it propagates.
     const errorEntry = debugData.workerErrors.find(e => e.manifestId === manifestId);
     if (errorEntry) {
       errorEntry.retryCount++;
-      errorEntry.error = error instanceof Error ? error.message : String(error);
+      errorEntry.error = e instanceof Error ? e.message : String(e);
     }
     onDebug?.({ ...debugData });
     return null;
   }
 };
 
-// Get current debug data (for UI access)
-export const getDebugData = (): PipelineDebugData => ({ ...debugData });
+// Retry with feedback exposed as generic export if needed, or UI calls run* directly with options?
+// The original code had specific `retryDirector`, `retryArchitect`.
+// We should expose wrappers or expect the UI to switch to using the main functions with options.
+// To support the existing UI calls likely expecting these names:
 
-// Retry Director with optional conversational context
 export const retryDirector = async (
   imageBase64: string,
   options: RetryOptions,
   onStream?: StreamCallback,
   onDebug?: DebugCallback
 ): Promise<PartManifest[]> => {
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
-
-  let prompt: string;
-
-  if (options.mode === 'conversational' && options.previousResult) {
-    prompt = `
-Role: You are a Senior 2D Rigger specializing in efficient game optimization.
-Task: Refine the breakdown of this asset into "Rigid Bodies" for cutout animation.
-
-Your previous analysis:
-${options.previousResult}
-
-${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'The previous breakdown had too many unnecessary pieces.'}
-
-CRITICAL INSTRUCTION: MERGE parts that move together.
-- If Part A is bolted, welded, or stuck to Part B and cannot rotate/move independently, they are ONE single part.
-- Do not separate hubcaps from wheels.
-- Do not separate decorations from the chassis/body.
-- Do not separate screws, bolts, or highlights.
-
-Provide an UPDATED list. For each merged kinematic part:
-1. id: Unique snake_case identifier
-2. name: Human-readable display name
-3. visual_anchor: [x, y] - A point (0-1 relative) INSIDE this part
-4. type_hint: One of [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
-`;
-  } else {
-    prompt = `
-Role: You are a Senior 2D Rigger specializing in kinematic mechanics.
-Task: Identify the main "Rigid Bodies" (kinematic groups) in this game asset.
-
-IMPORTANT: Use RELATIVE coordinates (0.0 to 1.0) where 0.0 is top/left and 1.0 is bottom/right.
-
-Definition of a "Part":
-A part is a group of visual elements that moves as a single rigid unit.
-- If multiple objects move together (e.g., a rider and their saddle, or a wheel and its hubcap), they must be ONE part.
-- Ignore internal seams, bolts, or color changes unless they represent a mechanical joint.
-
-For each Rigid Body, provide:
-1. id: Unique snake_case identifier (e.g., "rear_wheel_assembly", "main_chassis")
-2. name: Human-readable display name
-3. visual_anchor: [x, y] - A point (0-1 relative) that falls INSIDE this specific part.
-4. type_hint: One of [WHEEL, LIMB, BODY, PISTON, JOINT, DECORATION, OTHER]
-
-Rules:
-- Prioritize minimal, functional parts over detailed separation.
-- Ensure visual_anchor is clearly inside the main mass of the part.
-- Group static attachments (stickers, armor plates, handles) into their parent body.
-`;
-
-  }
-
-  const responseSchema = {
-    type: Type.ARRAY,
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        id: { type: Type.STRING },
-        name: { type: Type.STRING },
-        visual_anchor: {
-          type: Type.ARRAY,
-          items: { type: Type.NUMBER },
-          description: "[x, y] relative coordinates 0-1"
-        },
-        type_hint: {
-          type: Type.STRING,
-          enum: ["WHEEL", "LIMB", "BODY", "PISTON", "JOINT", "DECORATION", "OTHER"]
-        }
-      },
-      required: ["id", "name", "visual_anchor", "type_hint"]
-    }
-  };
-
-  const stream = await ai.models.generateContentStream({
-    model: modelId,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/png", data: imageBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
-  });
-
-  let fullText = "";
-  for await (const chunk of stream) {
-    if (chunk.text) {
-      fullText += chunk.text;
-      onStream?.(fullText, false);
-    }
-  }
-  onStream?.(fullText, true);
-
-  if (!fullText) throw new Error("Director retry: No response");
-
-  addApiLog('director', prompt, fullText, Date.now() - startTime);
-  const result = JSON.parse(fullText) as PartManifest[];
-
-  // Update debug data
-  debugData.directorOutput = result;
-  debugData.workerOutputs = []; // Clear workers since manifests changed
-  debugData.workerErrors = [];
-  debugData.architectOutput = null;
-  onDebug?.({ ...debugData });
-
-  return result;
+  return runDirector(imageBase64, options, onStream, onDebug);
 };
 
-// Retry Architect with optional conversational context
 export const retryArchitect = async (
   imageBase64: string,
   options: RetryOptions,
   onStream?: StreamCallback,
   onDebug?: DebugCallback
 ): Promise<GamePart[]> => {
-  const manifests = debugData.directorOutput;
+  const manifests = debugData.directorOutput!;
   const geometries = debugData.workerOutputs;
-
-  if (!manifests || geometries.length === 0) {
-    throw new Error("Cannot retry Architect: missing Director or Worker data");
-  }
-
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
-
-  const geoSummary = geometries.map(g => {
-    const m = manifests.find(m => m.id === g.id)!;
-    return `- ${m.name} (${g.id}): type=${g.shape.type}, bbox=[${g.bbox.join(',')}], type_hint=${m.type_hint}`;
-  }).join('\n');
-
-  let prompt: string;
-
-  if (options.mode === 'conversational' && options.previousResult) {
-    prompt = `
-Role: You are the Rigging Architect - the lead engineer assembling the final rig.
-
-Parts with their extracted geometry (all coordinates are 0-1 relative):
-${geoSummary}
-
-Your previous rigging:
-${options.previousResult}
-
-${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'Please re-analyze the hierarchy and rigging.'}
-
-Provide an UPDATED rigging addressing the feedback:
-1. BUILD HIERARCHY: Assign parentId (null for roots)
-2. DEFINE PIVOTS: {x, y} (0-1 relative) at joints/centers
-3. ASSIGN MOVEMENT: [ROTATION, SLIDING, FIXED, ELASTIC]
-`;
-  } else {
-    prompt = `
-Role: You are the Rigging Architect - the lead engineer assembling the final rig.
-
-Parts with their extracted geometry (all coordinates are 0-1 relative):
-${geoSummary}
-
-Task:
-1. BUILD HIERARCHY: Assign parentId to each part
-   - Larger body parts are typically parents of smaller attached parts
-   - Use null for root parts (main body, chassis)
-
-2. DEFINE PIVOTS: Assign pivot {x, y} (0-1 relative) for each part
-   - Wheels/circles: pivot at geometric center
-   - Limbs: pivot at joint/attachment point
-
-3. ASSIGN MOVEMENT: One of [ROTATION, SLIDING, FIXED, ELASTIC]
-`;
-  }
-
-  const responseSchema = {
-    type: Type.ARRAY,
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        id: { type: Type.STRING },
-        name: { type: Type.STRING },
-        parentId: { type: Type.STRING, nullable: true },
-        pivot: {
-          type: Type.OBJECT,
-          properties: {
-            x: { type: Type.NUMBER },
-            y: { type: Type.NUMBER }
-          },
-          required: ["x", "y"]
-        },
-        movementType: {
-          type: Type.STRING,
-          enum: ["ROTATION", "SLIDING", "FIXED", "ELASTIC"]
-        }
-      },
-      required: ["id", "name", "parentId", "pivot", "movementType"]
-    }
-  };
-
-  const stream = await ai.models.generateContentStream({
-    model: modelId,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/png", data: imageBase64 } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema
-    }
-  });
-
-  let fullText = "";
-  for await (const chunk of stream) {
-    if (chunk.text) {
-      fullText += chunk.text;
-      onStream?.(fullText, false);
-    }
-  }
-  onStream?.(fullText, true);
-
-  if (!fullText) throw new Error("Architect retry: No response");
-
-  const rigging = JSON.parse(fullText) as Array<{
-    id: string;
-    name: string;
-    parentId: string | null;
-    pivot: { x: number; y: number };
-    movementType: string;
-  }>;
-
-  addApiLog('architect', prompt, fullText, Date.now() - startTime);
-
-  // Merge geometry with rigging
-  const parts = rigging.map(rig => {
-    const geo = geometries.find(g => g.id === rig.id);
-    const manifest = manifests.find(m => m.id === rig.id);
-
-    if (!geo || !manifest) {
-      throw new Error(`Missing data for part ${rig.id}`);
-    }
-
-    return {
-      id: rig.id,
-      name: rig.name,
-      parentId: rig.parentId,
-      shape: geo.shape,
-      bbox: geo.bbox as [number, number, number, number],
-      pivot: rig.pivot,
-      movementType: rig.movementType as MovementType,
-      type_hint: manifest.type_hint as PartTypeHint,
-      confidence: geo.confidence
-    };
-  });
-
-  debugData.architectOutput = parts;
-  onDebug?.({ ...debugData });
-
-  return parts;
+  return runArchitect(imageBase64, manifests, geometries, options, onStream, onDebug);
 };
 
-// Retry a worker with conversational context
 export const retryWorkerWithFeedback = async (
   imageBase64: string,
   manifestId: string,
@@ -863,160 +711,16 @@ export const retryWorkerWithFeedback = async (
   onDebug?: DebugCallback
 ): Promise<WorkerGeometry | null> => {
   const manifest = debugData.directorOutput?.find(m => m.id === manifestId);
-  if (!manifest) {
-    console.error(`Manifest ${manifestId} not found`);
-    return null;
-  }
-
-  const ai = getAiClient();
-  const modelId = "gemini-3-flash-preview";
-  const startTime = Date.now();
-
-  // Find previous result if in conversational mode
-  const previousGeo = debugData.workerOutputs.find(w => w.id === manifestId);
-
-  let prompt: string;
-
-  if (options.mode === 'conversational' && previousGeo) {
-    const hasCompositedImage = !!options.compositedImage;
-    prompt = `
-Role: You are a Geometry Worker reconstructing a single part.
-
-Target part: "${manifest.name}" (${manifest.id})
-Type hint: ${manifest.type_hint}
-Visual anchor (0-1 relative): [${manifest.visual_anchor.join(', ')}]
-
-Your previous extraction:
-- Shape type: ${previousGeo.shape.type}
-- Bbox: [${previousGeo.bbox.join(', ')}]
-${previousGeo.shape.type === 'path' ? `- Path: ${(previousGeo.shape as any).d}` : ''}
-
-${hasCompositedImage ? 'The SECOND image shows your previous shape (colored outline) overlaid on the original. Analyze if the shape follows the part contour correctly.' : ''}
-
-${options.userFeedback ? `User feedback: "${options.userFeedback}"` : 'Please re-analyze and improve the shape to better match the part contour.'}
-
-Provide an UPDATED geometry. Output format (0-1 relative coords):
-1. shape: SVG primitive (circle, rect, ellipse, or path)
-2. bbox: [min_x, min_y, max_x, max_y]
-3. amodal_completed: description of occluded parts
-4. confidence: 0-1
-`;
-  } else {
-    prompt = `
-Role: You are a Geometry Worker reconstructing a single part.
-
-Target part: "${manifest.name}" (${manifest.id})
-Type hint: ${manifest.type_hint}
-Visual anchor (0-1 relative): [${manifest.visual_anchor.join(', ')}]
-
-Task: Extract precise geometry for this part ONLY.
-
-Output format (all coordinates 0-1 relative):
-1. shape: SVG primitive - choose the best fit:
-   - circle: {type: "circle", cx, cy, r}
-   - rect: {type: "rect", x, y, width, height, rx?}
-   - ellipse: {type: "ellipse", cx, cy, rx, ry}
-   - path: {type: "path", d: "M...Z"} for complex shapes
-
-2. bbox: [min_x, min_y, max_x, max_y] tight bounding box
-
-3. amodal_completed: Describe any occluded/hidden portions
-
-4. confidence: 0.0-1.0
-`;
-  }
-
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-      shape: {
-        type: Type.OBJECT,
-        properties: {
-          type: { type: Type.STRING, enum: ["circle", "rect", "ellipse", "path"] },
-          cx: { type: Type.NUMBER },
-          cy: { type: Type.NUMBER },
-          r: { type: Type.NUMBER },
-          x: { type: Type.NUMBER },
-          y: { type: Type.NUMBER },
-          width: { type: Type.NUMBER },
-          height: { type: Type.NUMBER },
-          rx: { type: Type.NUMBER },
-          ry: { type: Type.NUMBER },
-          d: { type: Type.STRING }
-        },
-        required: ["type"]
-      },
-      bbox: { type: Type.ARRAY, items: { type: Type.NUMBER } },
-      amodal_completed: { type: Type.STRING },
-      confidence: { type: Type.NUMBER }
-    },
-    required: ["shape", "bbox", "confidence"]
-  };
-
+  if (!manifest) return null;
   try {
-    // Build parts array - include composited image if available for visual feedback
-    const parts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [
-      { inlineData: { mimeType: "image/png", data: imageBase64 } }
-    ];
-
-    // Add composited image (with shape overlay) for conversational mode
-    if (options.mode === 'conversational' && options.compositedImage) {
-      parts.push({ inlineData: { mimeType: "image/png", data: options.compositedImage } });
-    }
-
-    parts.push({ text: prompt });
-
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: { parts },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema
-      }
-    });
-
-    const text = response.text;
-    if (!text) throw new Error(`Worker ${manifest.id}: No response`);
-
-    addApiLog('workers', prompt, text, Date.now() - startTime);
-    const result = JSON.parse(text);
-
-    const geometry: WorkerGeometry = {
-      id: manifest.id,
-      shape: normalizeShape(result.shape),
-      bbox: result.bbox,
-      amodal_completed: result.amodal_completed,
-      confidence: result.confidence
-    };
-
-    // Update debug data - remove from errors, update/add to outputs
-    debugData.workerErrors = debugData.workerErrors.filter(e => e.manifestId !== manifestId);
-    const existingIdx = debugData.workerOutputs.findIndex(w => w.id === manifestId);
-    if (existingIdx >= 0) {
-      debugData.workerOutputs[existingIdx] = geometry;
-    } else {
-      debugData.workerOutputs.push(geometry);
-    }
-
-    onDebug?.({ ...debugData });
-    return geometry;
-  } catch (error) {
-    const errorEntry = debugData.workerErrors.find(e => e.manifestId === manifestId);
-    if (errorEntry) {
-      errorEntry.retryCount++;
-      errorEntry.error = error instanceof Error ? error.message : String(error);
-    } else {
-      debugData.workerErrors.push({
-        manifestId,
-        manifestName: manifest.name,
-        error: error instanceof Error ? error.message : String(error),
-        retryCount: 1
-      });
-    }
-    onDebug?.({ ...debugData });
+    return await runWorker(imageBase64, manifest, options, onDebug);
+  } catch (e) {
+    // Similar error handling
     return null;
   }
 };
+
+export const getDebugData = (): PipelineDebugData => ({ ...debugData });
 
 export const generateAssetArt = async (
   originalImageBase64: string,
@@ -1025,16 +729,13 @@ export const generateAssetArt = async (
   _stylePrompt?: string
 ): Promise<string> => {
   const ai = getAiClient();
-  const modelId = "gemini-3-pro-image-preview";
+  const modelId = "gemini-3-pro-image-preview"; // Keeping this separate as it doesn't fit the generic JSON schema pattern easily
 
-  // Create number-to-part mapping (matches numbers drawn on atlas)
   const mapping = parts.map((p, index) => {
     const num = index + 1;
     const target = p.atlasRect!;
     const bboxStr = `[${p.bbox.map(v => v.toFixed(3)).join(',')}]`;
-    const shapeDesc = p.shape.type === 'path'
-      ? `path`
-      : `${p.shape.type}`;
+    const shapeDesc = p.shape.type === 'path' ? `path` : `${p.shape.type}`;
     return `- Box #${num} = "${p.name}": (Shape: ${shapeDesc}, BBox: ${bboxStr}) -> (Target rect: [${target.x},${target.y},${target.w},${target.h}])`;
   }).join("\n");
 
@@ -1055,7 +756,7 @@ INSTRUCTIONS:
 - OUTPUT MUST ONLY BE THE DRAWN PARTS on a clean white background.
 - OCCLUSION HANDLING: For parts partially hidden in the original image, generate the ENTIRE part as it would look if fully visible and detached.
 - Keep lighting, style, and perspective consistent across all parts.
-  `;
+`;
 
   const response = await ai.models.generateContent({
     model: modelId,
