@@ -56,7 +56,7 @@ Using a **Sequential Multi-Persona Workflow**, it combines the reasoning power o
 2. Rename `.env_example` to `.env` and fill in your API keys.
 
 ```bash
-GOOGLE_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
 FAL_KEY=your_key_here
 ```
 

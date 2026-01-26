@@ -322,7 +322,7 @@ const drawAtlas = (
     //ctx.fill();
     //ctx.lineWidth = 2;
     ctx.globalAlpha = 0.6;
-    ctx.filter = "blur(15px)";
+    ctx.filter = "blur(10px)";
     // We pass the ORIGINAL part bbox (which the shape is relative to)
     // p.part.bbox was clamped in calculatePartSizes, we use that.
     drawNormalizedPrimitive(ctx, p.part.shape, p.part.bbox, rect);
@@ -334,10 +334,12 @@ const drawAtlas = (
 
     // Draw distinct number behind
     ctx.fillStyle = "#e2e8f0"; // slate-200, solid light gray fallback
+
     ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(`${num}`, rect.x + rect.w / 2, rect.y + rect.h / 2);
+    ctx.strokeText(`${num}`, rect.x + rect.w / 2, rect.y + rect.h / 2);
   });
 
   ctx.textAlign = "start";

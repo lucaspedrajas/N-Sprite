@@ -801,7 +801,7 @@ ${mapping}
 INSTRUCTIONS:
 - Each numbered box in the LAYOUT_TEMPLATE corresponds to a part from the ORIGINAL_IMAGE.
 - Fill each numbered box with the corresponding part from the ORIGINAL_IMAGE without changing the perspective or style.
-- DO NOT include the dashed bounding box lines or numbers in your output.
+- DO NOT include the NUMBERS or BOUNDING BOXES in your output.
 - OUTPUT MUST ONLY BE THE DRAWN PARTS on a clean white background.
 - OCCLUSION HANDLING: For parts partially hidden in the original image, generate the ENTIRE part as it would look if fully visible and detached.
 - Keep lighting, style, and perspective consistent across all parts.

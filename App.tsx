@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, ArrowRight, Layers, Wand2, Image as ImageIcon, Palette, Monitor, BookOpen, FlaskConical, ChevronLeft, ChevronRight, Cpu, GitBranch, Grid, Sparkles, Scissors, Play, CheckCircle, RefreshCw, MessageSquare, RotateCcw, Terminal } from 'lucide-react';
+import { Upload, ArrowRight, Layers, Wand2, Image as ImageIcon, Palette, Monitor, BookOpen, FlaskConical, ChevronLeft, ChevronRight, Cpu, GitBranch, Grid, Sparkles, Scissors, Play, CheckCircle, RefreshCw, MessageSquare, RotateCcw, Terminal, Video } from 'lucide-react';
 import { AppState, AtlasResolution, PipelineDebugData, APICallLog, PartManifest, WorkerGeometry, GamePart, StreamState, SegmentationMethod, SegmentationMode } from './types';
 import { runDirectorOnly, runWorkersOnly, runArchitectOnly, generateAssetArt as generateAssetArtGemini, StreamCallback, StageCallback, DebugCallback, retryWorker, retryDirector, retryArchitect, retryWorkerWithFeedback, RetryOptions, getDebugData } from './services/geminiService';
 
@@ -14,6 +14,7 @@ import { Visualizer2D } from './components/Visualizer2D';
 import { DirectorStep } from './components/DirectorStep';
 import { WorkersStep } from './components/WorkersStep';
 import { ArchitectStep } from './components/ArchitectStep';
+import { PipelineRecorder } from './components/PipelineRecorder';
 import { ApiCallLog } from './components/ApiCallLog';
 import { StageControls } from './components/StageControls';
 
@@ -39,6 +40,7 @@ export default function App() {
   const [state, setState] = useState<AppState>(initialState);
   const [debugData, setDebugData] = useState<PipelineDebugData | null>(null);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [showRecorder, setShowRecorder] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('pipeline');
   const [imageModel, setImageModel] = useState<ImageModel>('gemini');
@@ -375,6 +377,15 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-4">
+          {state.activeStep > 1 && (
+            <button
+              onClick={() => setShowRecorder(true)}
+              className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-md border border-slate-700 transition-colors"
+            >
+              <Video className="w-4 h-4 text-pink-500" />
+              Export Video
+            </button>
+          )}
           <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
             <button
               onClick={() => setViewMode('pipeline')}
@@ -393,7 +404,22 @@ export default function App() {
             <Monitor className="w-5 h-5 text-slate-400 transition-colors hover:text-white" />
           </a>
         </div>
-      </header>
+      </header >
+
+
+      {/* Recorder Modal */}
+      {
+        showRecorder && state.originalImage && (
+          <PipelineRecorder
+            originalImage={state.originalImage}
+            debugData={debugData}
+            analysisResults={state.analysisResults}
+            generatedAtlas={state.generatedAtlasImage}
+            onClose={() => setShowRecorder(false)}
+          />
+        )
+      }
+
 
       {/* Main Content */}
       <main className="pt-24 pb-12 px-6 max-w-[1600px] mx-auto min-h-screen">
@@ -643,8 +669,9 @@ export default function App() {
               )}
             </div>
           </div>
-        )}
-      </main>
-    </div>
+        )
+        }
+      </main >
+    </div >
   );
 }
